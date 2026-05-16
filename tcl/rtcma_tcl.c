@@ -259,6 +259,20 @@ static int Cmd_player_detach(void *cd, Tcl_Interp *interp, int objc,
     return ReturnRc(interp, rtcma_player_detach(p));
 }
 
+static int Cmd_player_set_volume(void *cd, Tcl_Interp *interp, int objc,
+                                 Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "player volume");
+        return TCL_ERROR;
+    }
+    RtcmaPlayer *p = LookupHandle(interp, objv[1], H_PLAYER, "player");
+    if (!p) return TCL_ERROR;
+    double v;
+    if (Tcl_GetDoubleFromObj(interp, objv[2], &v) != TCL_OK) return TCL_ERROR;
+    return ReturnRc(interp, rtcma_player_set_volume(p, (float)v));
+}
+
 static int Cmd_player_destroy(void *cd, Tcl_Interp *interp, int objc,
                               Tcl_Obj *const objv[]) {
     (void)cd;
@@ -372,6 +386,20 @@ static int Cmd_capturer_detach(void *cd, Tcl_Interp *interp, int objc,
     return ReturnRc(interp, rtcma_capturer_detach(c));
 }
 
+static int Cmd_capturer_set_volume(void *cd, Tcl_Interp *interp, int objc,
+                                   Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "capturer volume");
+        return TCL_ERROR;
+    }
+    RtcmaCapturer *c = LookupHandle(interp, objv[1], H_CAPTURER, "capturer");
+    if (!c) return TCL_ERROR;
+    double v;
+    if (Tcl_GetDoubleFromObj(interp, objv[2], &v) != TCL_OK) return TCL_ERROR;
+    return ReturnRc(interp, rtcma_capturer_set_volume(c, (float)v));
+}
+
 static int Cmd_capturer_destroy(void *cd, Tcl_Interp *interp, int objc,
                                 Tcl_Obj *const objv[]) {
     (void)cd;
@@ -395,15 +423,17 @@ static const RtcmaCommand kCommands[] = {
     { "::rtcma::player::new",       Cmd_player_new       },
     { "::rtcma::player::start",     Cmd_player_start     },
     { "::rtcma::player::reopen",    Cmd_player_reopen    },
-    { "::rtcma::player::attach",    Cmd_player_attach    },
-    { "::rtcma::player::detach",    Cmd_player_detach    },
-    { "::rtcma::player::destroy",   Cmd_player_destroy   },
-    { "::rtcma::capturer::new",     Cmd_capturer_new     },
-    { "::rtcma::capturer::start",   Cmd_capturer_start   },
-    { "::rtcma::capturer::reopen",  Cmd_capturer_reopen  },
-    { "::rtcma::capturer::attach",  Cmd_capturer_attach  },
-    { "::rtcma::capturer::detach",  Cmd_capturer_detach  },
-    { "::rtcma::capturer::destroy", Cmd_capturer_destroy },
+    { "::rtcma::player::attach",     Cmd_player_attach      },
+    { "::rtcma::player::detach",     Cmd_player_detach      },
+    { "::rtcma::player::set-volume", Cmd_player_set_volume  },
+    { "::rtcma::player::destroy",    Cmd_player_destroy     },
+    { "::rtcma::capturer::new",      Cmd_capturer_new       },
+    { "::rtcma::capturer::start",    Cmd_capturer_start     },
+    { "::rtcma::capturer::reopen",   Cmd_capturer_reopen    },
+    { "::rtcma::capturer::attach",   Cmd_capturer_attach    },
+    { "::rtcma::capturer::detach",   Cmd_capturer_detach    },
+    { "::rtcma::capturer::set-volume", Cmd_capturer_set_volume },
+    { "::rtcma::capturer::destroy",  Cmd_capturer_destroy   },
     { NULL, NULL }
 };
 

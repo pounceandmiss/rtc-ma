@@ -96,6 +96,11 @@ struct RtcmaPlayer {
     ma_device        *device;
     int               started;
 
+    /* Mirror of ma_device.masterVolumeFactor so reopen() can re-apply
+     * the user's gain to a freshly-init'd ma_device (which defaults to
+     * 1.0). Public API is single-threaded per handle, so plain float. */
+    float             volume;
+
     /* stats */
     _Atomic uint64_t  pb_callbacks;
     _Atomic uint64_t  pb_underrun_samples;
@@ -117,6 +122,9 @@ struct RtcmaCapturer {
 
     ma_device        *device;
     int               started;
+
+    /* See RtcmaPlayer.volume. */
+    float             volume;
 
     _Atomic uint64_t  cap_frames_pushed;
     _Atomic uint64_t  cap_drops;
@@ -438,6 +446,7 @@ RtcmaPlayer *rtcma_player_new(const RtcmaPlayerConfig *cfg)
     p->channels              = channels;
     p->payload_type_override = cfg->payload_type;
     p->recv.rtc_track_id     = -1;
+    p->volume                = 1.0f;
     pthread_mutex_init(&p->bind_lock, NULL);
 
     p->device = playback_device_init(p, cfg->device_id);
@@ -515,6 +524,10 @@ int rtcma_player_reopen(RtcmaPlayer *p, const char *device_id)
 
     p->device = new_dev;
 
+    /* Fresh ma_device defaults to volume=1.0; carry the user's setting
+     * forward so a muted reopen doesn't silently unmute. */
+    ma_device_set_master_volume(p->device, p->volume);
+
     fprintf(stderr, "rtcma: player reopened%s\n",
             (device_id && *device_id) ? " pinned" : " default");
 
@@ -569,6 +582,16 @@ int rtcma_player_detach(RtcmaPlayer *p)
     return 0;
 }
 
+int rtcma_player_set_volume(RtcmaPlayer *p, float volume)
+{
+    if (!p || !p->device) return -1;
+    /* `volume >= 0 && volume <= 1` is false for NaN - intentional. */
+    if (!(volume >= 0.0f && volume <= 1.0f)) return -1;
+    p->volume = volume;
+    return ma_device_set_master_volume(p->device, volume) == MA_SUCCESS
+        ? 0 : -1;
+}
+
 /* -- Capturer ---------------------------------------------------------- */
 
 RtcmaCapturer *rtcma_capturer_new(const RtcmaCapturerConfig *cfg)
@@ -586,6 +609,7 @@ RtcmaCapturer *rtcma_capturer_new(const RtcmaCapturerConfig *cfg)
     c->channels          = channels;
     c->payload_type      = cfg->payload_type;
     c->send.rtc_track_id = -1;
+    c->volume            = 1.0f;
     pthread_mutex_init(&c->bind_lock, NULL);
 
     c->device = capture_device_init(c, cfg->device_id);
@@ -662,6 +686,9 @@ int rtcma_capturer_reopen(RtcmaCapturer *c, const char *device_id)
 
     c->device = new_dev;
 
+    /* See rtcma_player_reopen. */
+    ma_device_set_master_volume(c->device, c->volume);
+
     fprintf(stderr, "rtcma: capturer reopened%s\n",
             (device_id && *device_id) ? " pinned" : " default");
 
@@ -714,4 +741,13 @@ int rtcma_capturer_detach(RtcmaCapturer *c)
 
     if (was) rtcma_send_track_detach(&c->send);
     return 0;
+}
+
+int rtcma_capturer_set_volume(RtcmaCapturer *c, float volume)
+{
+    if (!c || !c->device) return -1;
+    if (!(volume >= 0.0f && volume <= 1.0f)) return -1;
+    c->volume = volume;
+    return ma_device_set_master_volume(c->device, volume) == MA_SUCCESS
+        ? 0 : -1;
 }

@@ -85,6 +85,8 @@ Inbound RTP on a track -> speakers. Owns its own playback audio device.
   decoder channels from SDP.
 - `::rtcma::player::detach $p` - Clear callback + user pointer. Blocks
   until any in-flight callback returns.
+- `::rtcma::player::set-volume $p $volume` - Linear playback gain in
+  `[0.0, 1.0]` (0.0 = mute, 1.0 = unity). See "Volume" below.
 - `::rtcma::player::destroy $p` - Implicit detach + free. Invalidates
   the handle.
 
@@ -103,6 +105,9 @@ device. Never installs any libdatachannel callback.
 - `::rtcma::capturer::attach $c $rtc_track` - Bind to a libdatachannel
   track id. Creates an Opus encoder.
 - `::rtcma::capturer::detach $c` - Unbind. Captured audio is dropped.
+- `::rtcma::capturer::set-volume $c $volume` - Linear capture gain in
+  `[0.0, 1.0]`. `0.0` zeroes mic PCM *before* the Opus encoder, so it
+  mutes on the wire. See "Volume" below.
 - `::rtcma::capturer::destroy $c` - Implicit detach + free.
 
 ## Device selection - picking specific endpoints
@@ -139,6 +144,21 @@ Omit `-device-id` (or pass an empty string) to use the system default
 for that direction. The Player and Capturer open independent hardware
 streams - see the top-level README's "Same-card caveat" if you're on
 bare ALSA with both sides pinned to the same `hw:N,M`.
+
+## Volume
+
+```tcl
+::rtcma::player::set-volume   $p 0.5    ;# -6 dB on playback
+::rtcma::capturer::set-volume $c 0.0    ;# wire-mute the mic
+```
+
+Per-instance linear gain in `[0.0, 1.0]`. Out-of-range or NaN values
+raise `RTCMA failure` and leave the current gain untouched.
+
+It's a software multiply applied in miniaudio's data callback - no OS
+mixer call - so each Player/Capturer carries its own gain even when
+two of them point at the same hardware. The setting is preserved
+across `reopen`.
 
 ## Hot-swap mid-call
 

@@ -182,6 +182,13 @@ int rtcma_player_attach(RtcmaPlayer *p, int rtc_track);
  * after is safe. Safe to call when not attached. Returns 0. */
 int rtcma_player_detach(RtcmaPlayer *p);
 
+/* Set linear playback gain. volume in [0.0, 1.0]; 0.0 = mute, 1.0 = unity.
+ * Atomic on the audio device's mixer factor, so it takes effect on the next
+ * data callback (~10 ms) with no clicks and no stop/restart. Idempotent.
+ * Persists across rtcma_player_reopen. Returns 0 on success, -1 on NULL
+ * handle or out-of-range / NaN volume. */
+int rtcma_player_set_volume(RtcmaPlayer *p, float volume);
+
 /* -- Capturer: mic -> rtcSendMessage on a track ----------------------- */
 
 typedef struct {
@@ -224,6 +231,13 @@ int rtcma_capturer_attach(RtcmaCapturer *c, int rtc_track);
 /* Unbind. After detach the Capturer holds no track id and audio
  * captured by the device is dropped. Returns 0. */
 int rtcma_capturer_detach(RtcmaCapturer *c);
+
+/* Set linear capture gain. Same semantics as rtcma_player_set_volume.
+ * volume=0.0 zeroes the mic PCM before it reaches the Opus encoder, so the
+ * encoder keeps producing frames at full 20 ms cadence and the
+ * SSRC/seq/timestamp stream stays alive - important because some peers drop
+ * streams whose SSRC stalls mid-call. Returns 0 / -1. */
+int rtcma_capturer_set_volume(RtcmaCapturer *c, float volume);
 
 #ifdef __cplusplus
 }

@@ -51,6 +51,32 @@ Everything is in `include/rtcma.h`.
 - `rtcma_enumerate_devices` returns playback and capture endpoints
   separately; pass the opaque `id` blob back as `device_id` to pin a
   specific endpoint.
+- `rtcma_player_set_volume` / `rtcma_capturer_set_volume` - linear gain
+  in `[0.0, 1.0]` (0.0 = mute, 1.0 = unity). See "Volume" below.
+
+## Volume
+
+```c
+int rtcma_player_set_volume(RtcmaPlayer   *p, float volume);
+int rtcma_capturer_set_volume(RtcmaCapturer *c, float volume);
+```
+
+Per-instance linear gain in `[0.0, 1.0]`. Returns `-1` on NULL handle
+or an out-of-range / NaN value (no-op in that case); `0` on success.
+
+It's a software multiply on the PCM buffer inside miniaudio's data
+callback (`ma_device_set_master_volume` -> `masterVolumeFactor`). The
+OS mixer and per-stream system volume are untouched. Two Players (or
+two Capturers) have independent gains even when they target the same
+hardware device.
+
+The value is mirrored on the Player/Capturer struct and re-applied on
+`rtcma_*_reopen`, so hot-swapping hardware preserves the setting.
+
+Capturer specifics: `volume = 0.0` zeroes the captured PCM *before*
+Opus encoding, so it's a true on-the-wire mute, not just
+attenuation. There's no getter; track the value yourself if you need
+to read it back.
 
 ## Lifecycle
 
