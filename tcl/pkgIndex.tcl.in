@@ -1,0 +1,5 @@
+# Generated from tcl/pkgIndex.tcl.in by CMake. Drop the build/tcl/
+# directory on Tcl's auto_path (or set TCLLIBPATH=...) and
+# `package require rtcma` resolves to the .so next to this file.
+package ifneeded rtcma @PROJECT_VERSION@ \
+    [list load [file join $dir "rtcma[info sharedlibextension]"] Rtcma]
