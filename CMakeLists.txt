@@ -96,7 +96,8 @@ add_library(rtcma STATIC
   src/rtcma_sdp.c
   src/rtcma_track.c
   src/rtcma_audio.c
-  src/rtcma_device_id.c)
+  src/rtcma_device_id.c
+  src/rtcma_log.c)
 
 target_include_directories(rtcma
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -1,6 +1,5 @@
 #include "rtcma_internal.h"
 
-#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -93,8 +92,9 @@ static int resolve_pt_and_params(int rtc_track_id,
         int n = rtcGetTrackPayloadTypesForCodec(rtc_track_id, "opus", pts,
                                                 (int)(sizeof(pts) / sizeof(pts[0])));
         if (n <= 0) {
-            fprintf(stderr, "rtcma: rtcGetTrackPayloadTypesForCodec(opus) "
-                            "returned %d on track %d\n", n, rtc_track_id);
+            rtcma_log(RTCMA_LOG_ERROR,
+                      "rtcGetTrackPayloadTypesForCodec(opus) returned %d "
+                      "on track %d", n, rtc_track_id);
             return -1;
         }
         *pt_inout = pts[0];
@@ -103,8 +103,9 @@ static int resolve_pt_and_params(int rtc_track_id,
     char sdp[4096];
     int got = rtcGetTrackDescription(rtc_track_id, sdp, sizeof(sdp));
     if (got <= 0) {
-        fprintf(stderr, "rtcma: rtcGetTrackDescription returned %d on "
-                        "track %d\n", got, rtc_track_id);
+        rtcma_log(RTCMA_LOG_ERROR,
+                  "rtcGetTrackDescription returned %d on track %d",
+                  got, rtc_track_id);
         return -1;
     }
     rtcma_opus_params_from_sdp(sdp, *pt_inout, params);
@@ -112,8 +113,8 @@ static int resolve_pt_and_params(int rtc_track_id,
     if (channels_override != 0) params->channels = channels_override;
 
     if (params->channels < 1 || params->channels > 2) {
-        fprintf(stderr, "rtcma: resolved channels=%d out of range\n",
-                params->channels);
+        rtcma_log(RTCMA_LOG_ERROR, "resolved channels=%d out of range",
+                  params->channels);
         return -1;
     }
     return 0;
@@ -135,16 +136,16 @@ int rtcma_recv_track_attach(RtcmaRecvTrack *t, int rtc_track_id,
     OpusDecoder *dec = opus_decoder_create(RTCMA_SAMPLE_RATE,
                                            params.channels, &err);
     if (!dec || err != OPUS_OK) {
-        fprintf(stderr, "rtcma: opus_decoder_create failed: %d\n", err);
+        rtcma_log(RTCMA_LOG_ERROR, "opus_decoder_create failed: %d", err);
         if (dec) opus_decoder_destroy(dec);
         return -1;
     }
 
-    fprintf(stderr,
-            "rtcma: recv attached track=%d pt=%d ch=%d "
-            "fec=%d maxplaybackrate=%d\n",
-            rtc_track_id, pt, params.channels,
-            params.useinbandfec, params.maxplaybackrate);
+    rtcma_log(RTCMA_LOG_INFO,
+              "recv attached track=%d pt=%d ch=%d "
+              "fec=%d maxplaybackrate=%d",
+              rtc_track_id, pt, params.channels,
+              params.useinbandfec, params.maxplaybackrate);
 
     rtcma_jitter_init(&t->jitter);
 
@@ -166,7 +167,7 @@ int rtcma_recv_track_attach(RtcmaRecvTrack *t, int rtc_track_id,
     rtcSetUserPointer(rtc_track_id, t);
     int rc = rtcSetMessageCallback(rtc_track_id, on_track_message);
     if (rc < 0) {
-        fprintf(stderr, "rtcma: rtcSetMessageCallback failed: %d\n", rc);
+        rtcma_log(RTCMA_LOG_ERROR, "rtcSetMessageCallback failed: %d", rc);
         rtcSetUserPointer(rtc_track_id, NULL);
         t->dec          = NULL;
         t->payload_type = 0;
@@ -222,7 +223,7 @@ int rtcma_recv_track_pull_pcm(RtcmaRecvTrack *t, int16_t *pcm,
         int decoded = opus_decode(t->dec, opus_buf, opus_len,
                                   pcm, RTCMA_DECODE_MAX_SAMPLES, 0);
         if (decoded < 0) {
-            fprintf(stderr, "rtcma: opus_decode failed: %d\n", decoded);
+            rtcma_log(RTCMA_LOG_ERROR, "opus_decode failed: %d", decoded);
             return -1;
         }
         return decoded;
@@ -238,7 +239,8 @@ int rtcma_recv_track_pull_pcm(RtcmaRecvTrack *t, int16_t *pcm,
         int decoded = opus_decode(t->dec, NULL, 0,
                                   pcm, RTCMA_FRAME_SAMPLES, 0);
         if (decoded < 0) {
-            fprintf(stderr, "rtcma: opus_decode (PLC) failed: %d\n", decoded);
+            rtcma_log(RTCMA_LOG_ERROR, "opus_decode (PLC) failed: %d",
+                      decoded);
             return -1;
         }
         return decoded;
@@ -282,7 +284,7 @@ int rtcma_send_track_attach(RtcmaSendTrack *t, int rtc_track_id,
                                            params.channels,
                                            OPUS_APPLICATION_AUDIO, &err);
     if (!enc || err != OPUS_OK) {
-        fprintf(stderr, "rtcma: opus_encoder_create failed: %d\n", err);
+        rtcma_log(RTCMA_LOG_ERROR, "opus_encoder_create failed: %d", err);
         if (enc) opus_encoder_destroy(enc);
         return -1;
     }
@@ -347,14 +349,14 @@ int rtcma_send_track_attach(RtcmaSendTrack *t, int rtc_track_id,
     rtcDirection dir = RTC_DIRECTION_UNKNOWN;
     int dir_rc = rtcGetTrackDirection(rtc_track_id, &dir);
 
-    fprintf(stderr,
-            "rtcma: send attached track=%d pt=%d ch=%d br=%d "
-            "fec=%d dtx=%d cbr=%d maxbw=%d ssrc=%u "
-            "direction=%d (rc=%d)\n",
-            rtc_track_id, pt, params.channels, bitrate,
-            params.useinbandfec, params.usedtx, params.cbr,
-            params.maxplaybackrate, ssrc,
-            (int)dir, dir_rc);
+    rtcma_log(RTCMA_LOG_INFO,
+              "send attached track=%d pt=%d ch=%d br=%d "
+              "fec=%d dtx=%d cbr=%d maxbw=%d ssrc=%u "
+              "direction=%d (rc=%d)",
+              rtc_track_id, pt, params.channels, bitrate,
+              params.useinbandfec, params.usedtx, params.cbr,
+              params.maxplaybackrate, ssrc,
+              (int)dir, dir_rc);
 
     atomic_store(&t->diag_send_logged, 0);
     atomic_store(&t->diag_send_ok,     0);
@@ -421,7 +423,7 @@ int rtcma_send_track_push_pcm(RtcmaSendTrack *t, const int16_t *pcm,
     pthread_mutex_unlock(&t->enc_lock);
 
     if (enc_size < 0) {
-        fprintf(stderr, "rtcma: opus_encode failed: %d\n", enc_size);
+        rtcma_log(RTCMA_LOG_ERROR, "opus_encode failed: %d", enc_size);
         return -1;
     }
 
@@ -456,11 +458,11 @@ int rtcma_send_track_push_pcm(RtcmaSendTrack *t, const int16_t *pcm,
     bool changed = (n > 0) && ((last_rc < 0) != (rc < 0));
     bool sample  = (n % 250) == 0;
     if (n < 4 || changed || sample) {
-        fprintf(stderr,
-                "rtcma: send #%d track=%d opus_size=%d "
-                "rtcSendMessage_rc=%d%s\n",
-                n, t->rtc_track_id, enc_size, rc,
-                changed ? "  <- state-change" : "");
+        rtcma_log(RTCMA_LOG_DEBUG,
+                  "send #%d track=%d opus_size=%d "
+                  "rtcSendMessage_rc=%d%s",
+                  n, t->rtc_track_id, enc_size, rc,
+                  changed ? "  <- state-change" : "");
     }
 
     return (rc >= 0) ? 0 : -1;

@@ -383,7 +383,7 @@ int rtcma_enumerate_devices(RtcmaDeviceList *out)
 
     ma_context ctx;
     if (ma_context_init(NULL, 0, NULL, &ctx) != MA_SUCCESS) {
-        fprintf(stderr, "rtcma: enumerate ma_context_init failed\n");
+        rtcma_log(RTCMA_LOG_ERROR, "enumerate ma_context_init failed");
         return -1;
     }
 
@@ -398,7 +398,7 @@ int rtcma_enumerate_devices(RtcmaDeviceList *out)
     ma_uint32       cap_count = 0;
     if (ma_context_get_devices(&ctx, &pb_infos, &pb_count,
                                &cap_infos, &cap_count) != MA_SUCCESS) {
-        fprintf(stderr, "rtcma: ma_context_get_devices failed\n");
+        rtcma_log(RTCMA_LOG_ERROR, "ma_context_get_devices failed");
         ma_context_uninit(&ctx);
         return -1;
     }
@@ -451,17 +451,18 @@ RtcmaPlayer *rtcma_player_new(const RtcmaPlayerConfig *cfg)
 
     p->device = playback_device_init(p, cfg->device_id);
     if (!p->device) {
-        fprintf(stderr, "rtcma: player ma_device_init failed\n");
+        rtcma_log(RTCMA_LOG_ERROR, "player ma_device_init failed");
         pthread_mutex_destroy(&p->bind_lock);
         free(p);
         return NULL;
     }
 
-    fprintf(stderr, "rtcma: player backend=%s rate=%u channels=%d%s\n",
-            ma_get_backend_name(p->device->pContext->backend),
-            (unsigned)p->device->sampleRate,
-            channels,
-            (cfg->device_id && *cfg->device_id) ? " pinned" : "");
+    rtcma_log(RTCMA_LOG_INFO,
+              "player backend=%s rate=%u channels=%d%s",
+              ma_get_backend_name(p->device->pContext->backend),
+              (unsigned)p->device->sampleRate,
+              channels,
+              (cfg->device_id && *cfg->device_id) ? " pinned" : "");
 
     return p;
 }
@@ -476,13 +477,13 @@ void rtcma_player_destroy(RtcmaPlayer *p)
         free(p->device);
     }
     pthread_mutex_destroy(&p->bind_lock);
-    fprintf(stderr,
-            "rtcma player stats: pb_cb=%llu pb_underrun_samples=%llu "
-            "pb_underrun_cb=%llu pb_max_underrun=%llu\n",
-            (unsigned long long)atomic_load(&p->pb_callbacks),
-            (unsigned long long)atomic_load(&p->pb_underrun_samples),
-            (unsigned long long)atomic_load(&p->pb_underrun_callbacks),
-            (unsigned long long)atomic_load(&p->pb_max_underrun));
+    rtcma_log(RTCMA_LOG_INFO,
+              "player stats: pb_cb=%llu pb_underrun_samples=%llu "
+              "pb_underrun_cb=%llu pb_max_underrun=%llu",
+              (unsigned long long)atomic_load(&p->pb_callbacks),
+              (unsigned long long)atomic_load(&p->pb_underrun_samples),
+              (unsigned long long)atomic_load(&p->pb_underrun_callbacks),
+              (unsigned long long)atomic_load(&p->pb_max_underrun));
     free(p);
 }
 
@@ -491,7 +492,7 @@ int rtcma_player_start(RtcmaPlayer *p)
     if (!p || !p->device) return -1;
     if (p->started) return 0;
     if (ma_device_start(p->device) != MA_SUCCESS) {
-        fprintf(stderr, "rtcma: player ma_device_start failed\n");
+        rtcma_log(RTCMA_LOG_ERROR, "player ma_device_start failed");
         return -1;
     }
     p->started = 1;
@@ -504,8 +505,8 @@ int rtcma_player_reopen(RtcmaPlayer *p, const char *device_id)
 
     ma_device *new_dev = playback_device_init(p, device_id);
     if (!new_dev) {
-        fprintf(stderr, "rtcma: player reopen ma_device_init failed "
-                        "(player unchanged)\n");
+        rtcma_log(RTCMA_LOG_WARNING,
+                  "player reopen ma_device_init failed (player unchanged)");
         return -1;
     }
 
@@ -528,13 +529,14 @@ int rtcma_player_reopen(RtcmaPlayer *p, const char *device_id)
      * forward so a muted reopen doesn't silently unmute. */
     ma_device_set_master_volume(p->device, p->volume);
 
-    fprintf(stderr, "rtcma: player reopened%s\n",
-            (device_id && *device_id) ? " pinned" : " default");
+    rtcma_log(RTCMA_LOG_INFO, "player reopened%s",
+              (device_id && *device_id) ? " pinned" : " default");
 
     if (was_started) {
         if (ma_device_start(p->device) != MA_SUCCESS) {
-            fprintf(stderr, "rtcma: player reopen ma_device_start failed "
-                            "(installed but stopped)\n");
+            rtcma_log(RTCMA_LOG_WARNING,
+                      "player reopen ma_device_start failed "
+                      "(installed but stopped)");
             return -1;
         }
         p->started = 1;
@@ -549,7 +551,7 @@ int rtcma_player_attach(RtcmaPlayer *p, int rtc_track)
     pthread_mutex_lock(&p->bind_lock);
     if (p->attached) {
         pthread_mutex_unlock(&p->bind_lock);
-        fprintf(stderr, "rtcma: player already attached\n");
+        rtcma_log(RTCMA_LOG_WARNING, "player already attached");
         return -1;
     }
     pthread_mutex_unlock(&p->bind_lock);
@@ -614,17 +616,18 @@ RtcmaCapturer *rtcma_capturer_new(const RtcmaCapturerConfig *cfg)
 
     c->device = capture_device_init(c, cfg->device_id);
     if (!c->device) {
-        fprintf(stderr, "rtcma: capturer ma_device_init failed\n");
+        rtcma_log(RTCMA_LOG_ERROR, "capturer ma_device_init failed");
         pthread_mutex_destroy(&c->bind_lock);
         free(c);
         return NULL;
     }
 
-    fprintf(stderr, "rtcma: capturer backend=%s rate=%u channels=%d%s\n",
-            ma_get_backend_name(c->device->pContext->backend),
-            (unsigned)c->device->sampleRate,
-            channels,
-            (cfg->device_id && *cfg->device_id) ? " pinned" : "");
+    rtcma_log(RTCMA_LOG_INFO,
+              "capturer backend=%s rate=%u channels=%d%s",
+              ma_get_backend_name(c->device->pContext->backend),
+              (unsigned)c->device->sampleRate,
+              channels,
+              (cfg->device_id && *cfg->device_id) ? " pinned" : "");
 
     return c;
 }
@@ -639,14 +642,14 @@ void rtcma_capturer_destroy(RtcmaCapturer *c)
         free(c->device);
     }
     pthread_mutex_destroy(&c->bind_lock);
-    fprintf(stderr,
-            "rtcma capturer stats: cap_frames=%llu cap_drops=%llu "
-            "send_ok=%llu send_fail=%llu last_rc=%d\n",
-            (unsigned long long)atomic_load(&c->cap_frames_pushed),
-            (unsigned long long)atomic_load(&c->cap_drops),
-            (unsigned long long)atomic_load(&c->send.diag_send_ok),
-            (unsigned long long)atomic_load(&c->send.diag_send_fail),
-            atomic_load(&c->send.diag_last_rc));
+    rtcma_log(RTCMA_LOG_INFO,
+              "capturer stats: cap_frames=%llu cap_drops=%llu "
+              "send_ok=%llu send_fail=%llu last_rc=%d",
+              (unsigned long long)atomic_load(&c->cap_frames_pushed),
+              (unsigned long long)atomic_load(&c->cap_drops),
+              (unsigned long long)atomic_load(&c->send.diag_send_ok),
+              (unsigned long long)atomic_load(&c->send.diag_send_fail),
+              atomic_load(&c->send.diag_last_rc));
     free(c);
 }
 
@@ -655,7 +658,7 @@ int rtcma_capturer_start(RtcmaCapturer *c)
     if (!c || !c->device) return -1;
     if (c->started) return 0;
     if (ma_device_start(c->device) != MA_SUCCESS) {
-        fprintf(stderr, "rtcma: capturer ma_device_start failed\n");
+        rtcma_log(RTCMA_LOG_ERROR, "capturer ma_device_start failed");
         return -1;
     }
     c->started = 1;
@@ -668,8 +671,9 @@ int rtcma_capturer_reopen(RtcmaCapturer *c, const char *device_id)
 
     ma_device *new_dev = capture_device_init(c, device_id);
     if (!new_dev) {
-        fprintf(stderr, "rtcma: capturer reopen ma_device_init failed "
-                        "(capturer unchanged)\n");
+        rtcma_log(RTCMA_LOG_WARNING,
+                  "capturer reopen ma_device_init failed "
+                  "(capturer unchanged)");
         return -1;
     }
 
@@ -689,13 +693,14 @@ int rtcma_capturer_reopen(RtcmaCapturer *c, const char *device_id)
     /* See rtcma_player_reopen. */
     ma_device_set_master_volume(c->device, c->volume);
 
-    fprintf(stderr, "rtcma: capturer reopened%s\n",
-            (device_id && *device_id) ? " pinned" : " default");
+    rtcma_log(RTCMA_LOG_INFO, "capturer reopened%s",
+              (device_id && *device_id) ? " pinned" : " default");
 
     if (was_started) {
         if (ma_device_start(c->device) != MA_SUCCESS) {
-            fprintf(stderr, "rtcma: capturer reopen ma_device_start failed "
-                            "(installed but stopped)\n");
+            rtcma_log(RTCMA_LOG_WARNING,
+                      "capturer reopen ma_device_start failed "
+                      "(installed but stopped)");
             return -1;
         }
         c->started = 1;
@@ -710,7 +715,7 @@ int rtcma_capturer_attach(RtcmaCapturer *c, int rtc_track)
     pthread_mutex_lock(&c->bind_lock);
     if (c->attached) {
         pthread_mutex_unlock(&c->bind_lock);
-        fprintf(stderr, "rtcma: capturer already attached\n");
+        rtcma_log(RTCMA_LOG_WARNING, "capturer already attached");
         return -1;
     }
     pthread_mutex_unlock(&c->bind_lock);

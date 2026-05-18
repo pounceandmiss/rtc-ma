@@ -10,6 +10,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* -- Logging (rtcma_log.c) --------------------------------------------
+ *
+ * Internal counterpart to the public rtcmaInitLogger API. All adapter
+ * code that previously wrote to stderr directly should go through this
+ * with an appropriate level - the caller decides what to keep via
+ * rtcmaInitLogger.
+ *
+ * The "rtcma: " prefix is added automatically; callers pass only the
+ * message body and no trailing newline. */
+void rtcma_log(rtcmaLogLevel level, const char *fmt, ...)
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
+
 /* -- RTP demux (rtcma_track.c) ----------------------------------------
  *
  * Pure RFC 3550 / 8285 RTP header parser. Extracted from on_track_message

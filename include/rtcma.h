@@ -98,6 +98,37 @@ extern "C" {
 typedef struct RtcmaPlayer   RtcmaPlayer;
 typedef struct RtcmaCapturer RtcmaCapturer;
 
+/* -- Logging ---------------------------------------------------------- *
+ * Severity values are numerically identical to libdatachannel's
+ * rtcLogLevel - 0=none ... 6=verbose - so a single integer can be
+ * passed through to rtcInitLogger if the consumer wants both libraries
+ * at the same level.
+ *
+ * Filter rule: a message at level L is emitted iff L <= the level set
+ * via rtcmaInitLogger. Default until rtcmaInitLogger is called is
+ * RTCMA_LOG_NONE - the adapter is silent. */
+typedef enum {
+    RTCMA_LOG_NONE    = 0,
+    RTCMA_LOG_FATAL   = 1,
+    RTCMA_LOG_ERROR   = 2,
+    RTCMA_LOG_WARNING = 3,
+    RTCMA_LOG_INFO    = 4,
+    RTCMA_LOG_DEBUG   = 5,
+    RTCMA_LOG_VERBOSE = 6
+} rtcmaLogLevel;
+
+/* Callback receives one formatted line per emission (no trailing
+ * newline). The message pointer is only valid for the duration of the
+ * call - copy it if you need to retain. If cb is NULL, lines are
+ * written to stderr instead. */
+typedef void (*rtcmaLogCallbackFunc)(rtcmaLogLevel level,
+                                     const char *message);
+
+/* Set the maximum severity emitted and (optionally) a callback to
+ * receive each line. Safe to call repeatedly; safe to call from any
+ * thread; safe to call before or after Players / Capturers exist. */
+void rtcmaInitLogger(rtcmaLogLevel level, rtcmaLogCallbackFunc cb);
+
 /* -- Device enumeration ----------------------------------------------- */
 
 typedef struct {
