@@ -274,15 +274,9 @@ int rtcma_send_track_attach(RtcmaSendTrack *t, int rtc_track_id,
         return -1;
 
     int err = 0;
-    /* AUDIO (not VOIP) + auto signal detection: VOIP mode is heavily
-     * tuned for speech (aggressive noise gating, SILK-only at low
-     * rates) and produces audible artifacts on pure tones. AUDIO with
-     * auto signal-type detection adapts per-frame between speech and
-     * music modes - cleaner on both at the cost of slightly less
-     * speech-per-bit efficiency. */
     OpusEncoder *enc = opus_encoder_create(RTCMA_SAMPLE_RATE,
                                            params.channels,
-                                           OPUS_APPLICATION_AUDIO, &err);
+                                           OPUS_APPLICATION_VOIP, &err);
     if (!enc || err != OPUS_OK) {
         rtcma_log(RTCMA_LOG_ERROR, "opus_encoder_create failed: %d", err);
         if (enc) opus_encoder_destroy(enc);
