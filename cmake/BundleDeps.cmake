@@ -28,7 +28,13 @@ set(_common_cache_args
   -DCMAKE_INSTALL_PREFIX:PATH=${RTCMA_VENDOR_PREFIX}
   -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
   -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
-  -DBUILD_SHARED_LIBS:BOOL=OFF)
+  -DBUILD_SHARED_LIBS:BOOL=OFF
+  # ExternalProject sub-builds do not inherit the parent toolchain, so a
+  # cross build would compile these vendored deps (opus, libdatachannel +
+  # juice/srtp2/usrsctp, mbedtls) with the host compiler and emit host-format
+  # objects the cross linker can't use. Forward it explicitly; empty on a
+  # native build, where it's a harmless no-op.
+  -DCMAKE_TOOLCHAIN_FILE:FILEPATH=${CMAKE_TOOLCHAIN_FILE})
 
 # Each maps to the .a that the corresponding ExternalProject install will
 # produce; add_dependencies wires the build order so cmake builds the
@@ -81,6 +87,11 @@ if(RTCMA_BUNDLE_LIBDATACHANNEL)
       -DNO_EXAMPLES:BOOL=ON
       -DNO_TESTS:BOOL=ON
       -DPREFER_SYSTEM_LIB:BOOL=OFF
+      # libsrtp defaults ENABLE_WARNINGS_AS_ERRORS=ON for its srtp2 target. Its
+      # debug_print("0x%08x", ntohl(ssrc)) then trips -Wformat under mingw, whose
+      # ntohl returns u_long -- a distinct type from the uint32_t %x wants, even
+      # though both are 32-bit. Doesn't fire on glibc (uint32_t == unsigned int).
+      -DENABLE_WARNINGS_AS_ERRORS:BOOL=OFF
     BUILD_BYPRODUCTS
       ${_lib}/libdatachannel.a
       ${_lib}/libjuice.a

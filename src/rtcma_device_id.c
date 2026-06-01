@@ -17,6 +17,10 @@
 #include "rtcma_device_id.h"
 #include "rtcma_internal.h"
 
+#ifdef _WIN32
+#include <windows.h>  /* WideCharToMultiByte/MultiByteToWideChar/CP_UTF8 (WASAPI path) */
+#endif
+
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
