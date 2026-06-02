@@ -135,9 +135,19 @@ endif()
 # -- opus ---------------------------------------------------------------
 if(RTCMA_BUNDLE_OPUS)
   # --- opus 1.6.1 (sha256-pinned tarball) ------------------------------------
+  # Set RTCMA_OPUS_SOURCE_DIR to build from a pre-staged tree (offline /
+  # flatpak) instead of fetching the tarball.
+  set(RTCMA_OPUS_SOURCE_DIR "" CACHE PATH
+    "Pre-staged opus source tree; fetch upstream tarball when empty")
+  if(RTCMA_OPUS_SOURCE_DIR)
+    set(_opus_fetch SOURCE_DIR ${RTCMA_OPUS_SOURCE_DIR} DOWNLOAD_COMMAND "")
+  else()
+    set(_opus_fetch
+      URL      https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+      URL_HASH SHA256=6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1)
+  endif()
   ExternalProject_Add(opus_external
-    URL               https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
-    URL_HASH          SHA256=6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+    ${_opus_fetch}
     PREFIX            ${CMAKE_BINARY_DIR}/_opus
     CMAKE_CACHE_ARGS
       ${_common_cache_args}
