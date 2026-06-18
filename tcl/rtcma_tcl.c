@@ -9,10 +9,11 @@
  * player / capturer handles around the same way they pass ::rtc::*
  * track ids.
  *
- * No callback trampolines: rtc-ma's data path is entirely C-side
- * (miniaudio thread -> libdatachannel worker thread). The Tcl layer is
- * just configuration + lifecycle, so there is no Tcl_ThreadQueueEvent
- * machinery the way libdatachannel-tcl needs.
+ * The data path is entirely C-side (miniaudio thread -> libdatachannel
+ * worker thread); the Tcl layer is configuration + lifecycle. The one
+ * exception is the logger (::rtcma::set-log-level), whose callback fires
+ * on those worker threads and so uses a compact Tcl_ThreadQueueEvent
+ * trampoline to reach the registering Tcl thread.
  */
 
 #include "rtcma_tcl.h"
@@ -411,6 +412,137 @@ static int Cmd_capturer_destroy(void *cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* -- ::rtcma::set-log-level ----------------------------------------- *
+ * The log callback fires on rtc-ma's worker threads, so each line is
+ * marshalled to the registering Tcl thread via Tcl_ThreadQueueEvent. The
+ * script runs as `prefix 0 level message`; the leading 0 matches the rtc
+ * runtime's object-id-first convention so one sink proc handles both. */
+
+static const char *const kRtcmaLogLevelNames[] = {
+    "none", "fatal", "error", "warning", "info", "debug", "verbose", NULL
+};
+
+static Tcl_ThreadId g_log_thread = NULL;
+static Tcl_Interp  *g_log_interp = NULL;
+static Tcl_Obj     *g_log_script = NULL;   /* command prefix; NULL if unset */
+
+typedef struct { Tcl_Event ev; char *level; char *message; } RtcmaLogEvent;
+
+static char *rtcma_xstrdup(const char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s);
+    char *p = (char *)ckalloc(n + 1);
+    memcpy(p, s, n + 1);
+    return p;
+}
+
+static int RtcmaLogDispatch(Tcl_Event *evPtr, int flags) {
+    (void)flags;
+    RtcmaLogEvent *e = (RtcmaLogEvent *)evPtr;
+    Tcl_Interp *interp = NULL;
+    Tcl_Obj    *script = NULL;
+    Tcl_MutexLock(&g_mutex);
+    if (g_log_script) {
+        script = g_log_script;
+        Tcl_IncrRefCount(script);
+        interp = g_log_interp;
+    }
+    Tcl_MutexUnlock(&g_mutex);
+    if (script && interp) {
+        Tcl_Obj **prefix;
+        Tcl_Size  prefix_n;
+        if (Tcl_ListObjGetElements(NULL, script, &prefix_n, &prefix) != TCL_OK) {
+            prefix_n = 1;
+            prefix = &script;
+        }
+        int total = (int)prefix_n + 3;
+        Tcl_Obj **argv = (Tcl_Obj **)ckalloc(sizeof(Tcl_Obj *) * (size_t)total);
+        int n = 0;
+        for (; n < prefix_n; n++) { argv[n] = prefix[n]; Tcl_IncrRefCount(argv[n]); }
+        argv[n] = Tcl_NewIntObj(0);                                  Tcl_IncrRefCount(argv[n]); n++;
+        argv[n] = Tcl_NewStringObj(e->level ? e->level : "", -1);    Tcl_IncrRefCount(argv[n]); n++;
+        argv[n] = Tcl_NewStringObj(e->message ? e->message : "", -1);Tcl_IncrRefCount(argv[n]); n++;
+        int rc = Tcl_EvalObjv(interp, total, argv, TCL_EVAL_GLOBAL);
+        if (rc == TCL_ERROR) Tcl_BackgroundError(interp);
+        for (int i = 0; i < total; i++) Tcl_DecrRefCount(argv[i]);
+        ckfree((char *)argv);
+        Tcl_DecrRefCount(script);
+    }
+    if (e->level)   ckfree(e->level);
+    if (e->message) ckfree(e->message);
+    return 1;
+}
+
+/* Frees queued log events when the callback is detached. */
+static int RtcmaLogEventMatch(Tcl_Event *ev, void *cd) {
+    (void)cd;
+    if (ev->proc == RtcmaLogDispatch) {
+        RtcmaLogEvent *e = (RtcmaLogEvent *)ev;
+        if (e->level)   ckfree(e->level);
+        if (e->message) ckfree(e->message);
+        return 1;
+    }
+    return 0;
+}
+
+/* Called by rtc-ma from a worker thread; copies the line and queues it. */
+static void RtcmaLogCb(rtcmaLogLevel level, const char *message) {
+    Tcl_MutexLock(&g_mutex);
+    Tcl_ThreadId t = g_log_thread;
+    Tcl_MutexUnlock(&g_mutex);
+    if (!t) return;
+    const char *lname = ((int)level >= 0 && (int)level <= 6)
+        ? kRtcmaLogLevelNames[level] : "info";
+    RtcmaLogEvent *e = (RtcmaLogEvent *)ckalloc(sizeof(*e));
+    e->ev.proc = RtcmaLogDispatch;
+    e->ev.nextPtr = NULL;
+    e->level   = rtcma_xstrdup(lname);
+    e->message = rtcma_xstrdup(message);
+    Tcl_ThreadQueueEvent(t, &e->ev, TCL_QUEUE_TAIL);
+    Tcl_ThreadAlert(t);
+}
+
+static int Cmd_set_log_level(void *cd, Tcl_Interp *interp, int objc,
+                             Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2 && objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "level ?callback?");
+        return TCL_ERROR;
+    }
+    int idx;
+    if (Tcl_GetIndexFromObj(interp, objv[1], kRtcmaLogLevelNames, "log-level",
+                            0, &idx) != TCL_OK) return TCL_ERROR;
+
+    Tcl_Obj *newScript = NULL;
+    if (objc == 3) {
+        Tcl_Size slen = 0;
+        (void)Tcl_GetStringFromObj(objv[2], &slen);
+        if (slen > 0) newScript = objv[2];
+    }
+
+    Tcl_Obj *prev;
+    Tcl_MutexLock(&g_mutex);
+    prev = g_log_script;
+    if (newScript) {
+        Tcl_IncrRefCount(newScript);
+        g_log_script = newScript;
+        g_log_interp = interp;
+        g_log_thread = Tcl_GetCurrentThread();
+    } else {
+        g_log_script = NULL;
+        g_log_interp = NULL;
+        g_log_thread = NULL;
+    }
+    /* No callback uses rtc-ma's default stderr sink. */
+    rtcmaInitLogger((rtcmaLogLevel)idx, newScript ? RtcmaLogCb : NULL);
+    Tcl_MutexUnlock(&g_mutex);
+    if (prev) Tcl_DecrRefCount(prev);
+    if (!newScript) Tcl_DeleteEvents(RtcmaLogEventMatch, NULL);
+
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(0));
+    return TCL_OK;
+}
+
 /* -- module init ---------------------------------------------------- */
 
 typedef struct {
@@ -419,6 +551,7 @@ typedef struct {
 } RtcmaCommand;
 
 static const RtcmaCommand kCommands[] = {
+    { "::rtcma::set-log-level",     Cmd_set_log_level    },
     { "::rtcma::enumerate-devices", Cmd_enumerate        },
     { "::rtcma::player::new",       Cmd_player_new       },
     { "::rtcma::player::start",     Cmd_player_start     },
