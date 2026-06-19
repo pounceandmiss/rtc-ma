@@ -332,6 +332,9 @@ static ma_device *capture_device_init(RtcmaCapturer *c, const char *device_id)
     mcfg.sampleRate        = RTCMA_SAMPLE_RATE;
     mcfg.dataCallback      = on_capture;
     mcfg.pUserData         = c;
+    /* Voice-comm capture path: platform AEC/AGC/NS and a call-normalized
+     * level. Without it the mic is noticeably quiet to the peer. */
+    mcfg.aaudio.inputPreset = ma_aaudio_input_preset_voice_communication;
 
     if (ma_device_init(NULL, &mcfg, dev) != MA_SUCCESS) {
         free(dev);
