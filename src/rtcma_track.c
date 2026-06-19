@@ -199,6 +199,15 @@ void rtcma_recv_track_detach(RtcmaRecvTrack *t)
         opus_decoder_destroy(t->dec);
         t->dec = NULL;
     }
+    rtcma_log(RTCMA_LOG_INFO,
+              "recv jitter stats: put=%llu present=%llu miss=%llu "
+              "miss_empty=%llu late_drop=%llu dup_drop=%llu",
+              (unsigned long long)t->jitter.stat_put,
+              (unsigned long long)t->jitter.stat_get_present,
+              (unsigned long long)t->jitter.stat_get_miss,
+              (unsigned long long)t->jitter.stat_get_miss_empty,
+              (unsigned long long)t->jitter.stat_late_drop,
+              (unsigned long long)t->jitter.stat_dup_drop);
     rtcma_jitter_destroy(&t->jitter);
 }
 

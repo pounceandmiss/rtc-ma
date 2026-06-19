@@ -12,10 +12,9 @@ void rtcma_jitter_init(RtcmaJitter *j)
 {
     memset(j, 0, sizeof(*j));
     pthread_mutex_init(&j->lock, NULL);
-    /* 2 frames = 40 ms initial buffer. Tolerates a one-packet reorder
-     * before draining starts. Higher values absorb more network jitter
-     * at the cost of perceived latency. */
-    j->prime_threshold = 2;
+    /* 3 frames = 60 ms target depth. The play head holds this much buffered
+     * ahead of itself; higher absorbs more jitter at the cost of latency. */
+    j->prime_threshold = 3;
 }
 
 void rtcma_jitter_destroy(RtcmaJitter *j)
@@ -88,6 +87,13 @@ bool rtcma_jitter_put(RtcmaJitter *j, uint16_t seq,
     slot->present = true;
     j->fill_count++;
 
+    /* Track the live edge so get() can tell a late frame (hold and conceal)
+     * from a genuinely lost one (skip forward). */
+    if (!j->have_highest || seq_cmp(seq, j->highest_seq) > 0) {
+        j->highest_seq  = seq;
+        j->have_highest = true;
+    }
+
     pthread_mutex_unlock(&j->lock);
     return true;
 }
@@ -127,12 +133,29 @@ bool rtcma_jitter_get(RtcmaJitter *j, uint8_t *out_buf, int out_buf_cap,
         slot->present = false;
         j->fill_count--;
         j->stat_get_present++;
-    } else {
-        j->stat_get_miss++;
-        if (j->fill_count == 0) j->stat_get_miss_empty++;
+        j->hold_count = 0;
+        j->play_seq++;
+        pthread_mutex_unlock(&j->lock);
+        return present;
     }
 
-    j->play_seq++;
+    /* Miss. Only advance the play head when newer frames have piled up past
+     * the target depth - then this slot is a real gap to skip. At or under
+     * target the frame is merely late: hold position so it still plays when
+     * it arrives, and let the caller conceal meanwhile. Without this the head
+     * runs past the live edge and strands frames that arrive a beat late.
+     * MAX_HOLD bounds the stall if a live-edge frame is truly lost. */
+    j->stat_get_miss++;
+    if (j->fill_count == 0) j->stat_get_miss_empty++;
+
+    int16_t depth = j->have_highest ? seq_cmp(j->highest_seq, j->play_seq) : 0;
+    if (depth > j->prime_threshold || j->hold_count >= RTCMA_JITTER_MAX_HOLD) {
+        j->play_seq++;
+        j->hold_count = 0;
+    } else {
+        j->hold_count++;
+    }
+
     pthread_mutex_unlock(&j->lock);
-    return present;
+    return false;
 }

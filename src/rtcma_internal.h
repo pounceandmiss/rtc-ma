@@ -91,6 +91,7 @@ int     rtcma_internal_id_from_string(const char *s, int backend,
 
 #define RTCMA_JITTER_RING        8
 #define RTCMA_JITTER_MAX_PAYLOAD 1500   /* one MTU is enough for Opus 20 ms */
+#define RTCMA_JITTER_MAX_HOLD    5      /* conceal-and-hold frames before skipping a lost live-edge frame (~100 ms) */
 
 typedef struct {
     uint8_t  data[RTCMA_JITTER_MAX_PAYLOAD];
@@ -105,7 +106,11 @@ typedef struct {
     bool             primed;          /* true once we've seen first packet */
     bool             playing;         /* true once initial fill reached */
     int              fill_count;      /* slots currently holding data */
-    int              prime_threshold; /* fill_count >= this before play starts */
+    int              prime_threshold; /* fill_count >= this before play starts;
+                                        also the steady-state target depth */
+    uint16_t         highest_seq;     /* highest seq seen so far: the live edge */
+    bool             have_highest;
+    int              hold_count;      /* consecutive conceal-and-hold frames */
     pthread_mutex_t  lock;
 
     /* Stats (helpful for tests and future logging) */
