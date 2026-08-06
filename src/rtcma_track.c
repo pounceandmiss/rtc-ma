@@ -15,6 +15,7 @@
  * header from. */
 RtcmaRtpParse rtcma_parse_rtp(const uint8_t *msg, int size, int expected_pt,
                               uint16_t *out_seq,
+                              uint32_t *out_timestamp,
                               const uint8_t **out_payload,
                               int *out_payload_len)
 {
@@ -49,6 +50,10 @@ RtcmaRtpParse rtcma_parse_rtp(const uint8_t *msg, int size, int expected_pt,
     if (expected_pt >= 0 && pt != expected_pt) return RTCMA_RTP_SKIP;
 
     if (out_seq)         *out_seq         = ((uint16_t)p[2] << 8) | p[3];
+    if (out_timestamp)   *out_timestamp   = ((uint32_t)p[4] << 24)
+                                          | ((uint32_t)p[5] << 16)
+                                          | ((uint32_t)p[6] <<  8)
+                                          |  (uint32_t)p[7];
     if (out_payload)     *out_payload     = p + header_len;
     if (out_payload_len) *out_payload_len = payload_len;
     return RTCMA_RTP_ACCEPT;
@@ -65,13 +70,22 @@ static void on_track_message(int id, const char *msg, int size, void *ptr)
     if (!t) return;
 
     uint16_t       seq;
+    uint32_t       timestamp;
     const uint8_t *payload;
     int            payload_len;
     if (rtcma_parse_rtp((const uint8_t *)msg, size, t->payload_type,
-                        &seq, &payload, &payload_len) != RTCMA_RTP_ACCEPT)
+                        &seq, &timestamp, &payload, &payload_len)
+            != RTCMA_RTP_ACCEPT)
         return;
 
-    rtcma_jitter_put(&t->jitter, seq, payload, payload_len);
+    /* The jitter buffer schedules by duration, so it needs the packet's
+     * span up front. Asking opus also rejects anything that isn't a
+     * decodable opus packet before it can reach the decoder. */
+    int span = opus_packet_get_nb_samples(payload, payload_len,
+                                          RTCMA_SAMPLE_RATE);
+    if (span <= 0) return;
+
+    rtcma_jitter_put(&t->jitter, timestamp, seq, payload, payload_len, span);
 }
 
 /* Resolve PT and fmtp opus parameters via libdatachannel, honouring
@@ -147,7 +161,11 @@ int rtcma_recv_track_attach(RtcmaRecvTrack *t, int rtc_track_id,
               rtc_track_id, pt, params.channels,
               params.useinbandfec, params.maxplaybackrate);
 
-    rtcma_jitter_init(&t->jitter);
+    if (rtcma_jitter_init(&t->jitter, RTCMA_FRAME_SAMPLES) < 0) {
+        rtcma_log(RTCMA_LOG_ERROR, "jitter_buffer_init failed");
+        opus_decoder_destroy(dec);
+        return -1;
+    }
 
     /* Populate the fields on_track_message reads (payload_type for the
      * PT filter, jitter for the enqueue) BEFORE arming the callback.
@@ -200,14 +218,15 @@ void rtcma_recv_track_detach(RtcmaRecvTrack *t)
         t->dec = NULL;
     }
     rtcma_log(RTCMA_LOG_INFO,
-              "recv jitter stats: put=%llu present=%llu miss=%llu "
-              "miss_empty=%llu late_drop=%llu dup_drop=%llu",
+              "recv jitter stats: put=%llu reject=%llu frame=%llu "
+              "conceal=%llu conceal_fec=%llu conceal_dry=%llu stretch=%llu",
               (unsigned long long)t->jitter.stat_put,
-              (unsigned long long)t->jitter.stat_get_present,
-              (unsigned long long)t->jitter.stat_get_miss,
-              (unsigned long long)t->jitter.stat_get_miss_empty,
-              (unsigned long long)t->jitter.stat_late_drop,
-              (unsigned long long)t->jitter.stat_dup_drop);
+              (unsigned long long)t->jitter.stat_put_reject,
+              (unsigned long long)t->jitter.stat_frame,
+              (unsigned long long)t->jitter.stat_conceal,
+              (unsigned long long)t->jitter.stat_conceal_fec,
+              (unsigned long long)t->jitter.stat_conceal_dry,
+              (unsigned long long)t->jitter.stat_stretch);
     rtcma_jitter_destroy(&t->jitter);
 }
 
@@ -224,35 +243,58 @@ int rtcma_recv_track_pull_pcm(RtcmaRecvTrack *t, int16_t *pcm,
         return -1;
 
     uint8_t opus_buf[RTCMA_JITTER_MAX_PAYLOAD];
-    int     opus_len = 0;
-    bool present = rtcma_jitter_get(&t->jitter, opus_buf, sizeof(opus_buf),
-                                    &opus_len);
+    int     opus_len = 0, span = 0, skip = 0;
 
-    if (present) {
+    switch (rtcma_jitter_get(&t->jitter, opus_buf, sizeof(opus_buf),
+                             &opus_len, &span, &skip)) {
+    case RTCMA_JITTER_SILENT:
+        return 0;
+
+    case RTCMA_JITTER_FRAME: {
         int decoded = opus_decode(t->dec, opus_buf, opus_len,
                                   pcm, RTCMA_DECODE_MAX_SAMPLES, 0);
         if (decoded < 0) {
             rtcma_log(RTCMA_LOG_ERROR, "opus_decode failed: %d", decoded);
             return -1;
         }
+        if (skip > 0) {
+            if (skip >= decoded) return 0;
+            memmove(pcm, pcm + (size_t)skip * (size_t)t->channels,
+                    (size_t)(decoded - skip) * (size_t)t->channels
+                        * sizeof(int16_t));
+            decoded -= skip;
+        }
         return decoded;
     }
 
-    /* Jitter empty. If we've ever started playing, run PLC for this
-     * slot - opus extrapolates one nominal-duration frame from decoder
-     * state. Sounds nicer than zero-fill for short gaps. Ask for 20 ms;
-     * matching the typical packetisation keeps PLC pacing aligned with
-     * the rest of the stream. If the jitter hasn't primed yet, return
-     * 0 so the caller fills silence. */
-    if (t->jitter.playing) {
-        int decoded = opus_decode(t->dec, NULL, 0,
-                                  pcm, RTCMA_FRAME_SAMPLES, 0);
+    case RTCMA_JITTER_CONCEAL:
+    case RTCMA_JITTER_STRETCH: {
+        /* opus needs a frame size that is a multiple of 2.5 ms, and a gap
+         * measured off a peer's timestamps is not guaranteed to be one.
+         * Cap the span at what a single decode can produce and let the
+         * next pull cover any remainder. */
+        if (span > RTCMA_DECODE_MAX_SAMPLES) span = RTCMA_DECODE_MAX_SAMPLES;
+        span -= span % (RTCMA_SAMPLE_RATE / 400);   /* 2.5 ms */
+        if (span <= 0) return 0;
+
+        /* Given the packet that follows the gap, decode the copy of the
+         * lost frame that opus embedded in it. The copy is of the frame
+         * preceding that packet at that packet's own duration, so it is
+         * only the frame we want if the durations match. */
+        int use_fec = opus_len > 0
+            && opus_packet_get_nb_samples(opus_buf, opus_len,
+                                          RTCMA_SAMPLE_RATE) == span;
+
+        int decoded = use_fec
+            ? opus_decode(t->dec, opus_buf, opus_len, pcm, span, 1)
+            : opus_decode(t->dec, NULL, 0, pcm, span, 0);
         if (decoded < 0) {
-            rtcma_log(RTCMA_LOG_ERROR, "opus_decode (PLC) failed: %d",
-                      decoded);
+            rtcma_log(RTCMA_LOG_ERROR, "opus_decode (%s) failed: %d",
+                      use_fec ? "FEC" : "PLC", decoded);
             return -1;
         }
         return decoded;
+    }
     }
     return 0;
 }

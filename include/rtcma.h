@@ -9,14 +9,16 @@
  *
  * -- Threading ---------------------------------------------------------
  *  libdatachannel callbacks fire on its worker threads. The adapter
- *  parses RTP and pushes Opus payload into a lock-protected jitter ring
- *  there.
+ *  parses RTP and pushes Opus payload into a lock-protected jitter
+ *  buffer there.
  *
  *  Each Player owns a playback-only audio device; each Capturer owns a
  *  capture-only audio device. The two run on independent callback
  *  threads with independent hardware clocks. The Player callback pulls
- *  one 20 ms frame from the jitter ring, opus-decodes it (with PLC on
- *  miss), and writes to the output buffer; the audio device is the
+ *  one chunk from the jitter buffer, opus-decodes it (concealing when
+ *  the buffer reports a gap), and writes to the output buffer; the
+ *  jitter buffer picks its own play-out depth from the arrival timings
+ *  it sees, and the audio device is the
  *  playout clock, which is the only thing that prevents audible
  *  cracking. The Capturer callback receives 20 ms PCM, opus-encodes,
  *  and calls rtcSendMessage. Do NOT add timers or worker threads to

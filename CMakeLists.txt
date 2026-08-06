@@ -87,9 +87,10 @@ endif()
 
 # -- The library --------------------------------------------------------
 # Single static archive: track adapter + jitter + SDP parser + miniaudio
-# glue. miniaudio.h is the only large single-header amalgamation in here;
-# the audio source file silences its noisy warnings privately so the rest
-# of the project still compiles under -Wall -Wextra.
+# glue, plus the vendored speexdsp jitter buffer. miniaudio.h is the only
+# large single-header amalgamation in here; the audio source file silences
+# its noisy warnings privately so the rest of the project still compiles
+# under -Wall -Wextra.
 
 add_library(rtcma STATIC
   src/rtcma_jitter.c
@@ -97,11 +98,20 @@ add_library(rtcma STATIC
   src/rtcma_track.c
   src/rtcma_audio.c
   src/rtcma_device_id.c
-  src/rtcma_log.c)
+  src/rtcma_log.c
+  src/speexdsp/jitter.c)
 
 target_include_directories(rtcma
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+          ${CMAKE_CURRENT_SOURCE_DIR}/src/speexdsp)
+
+# See src/speexdsp/README.md. HAVE_CONFIG_H stays undefined so no
+# configure-generated header is needed, and DISABLE_WARNINGS keeps
+# speexdsp's fprintf(stderr) calls off the audio device thread.
+set_source_files_properties(src/speexdsp/jitter.c PROPERTIES
+  COMPILE_DEFINITIONS "FLOATING_POINT;EXPORT=;DISABLE_WARNINGS"
+  COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-parameter")
 
 target_link_libraries(rtcma
   PUBLIC  Rtcma::libdatachannel Rtcma::opus Threads::Threads

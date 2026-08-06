@@ -30,8 +30,13 @@ static int make_rtp_header(uint8_t *buf, int pt, uint16_t seq,
     buf[1]  = (uint8_t)(pt & 0x7F);
     buf[2]  = (uint8_t)(seq >> 8);
     buf[3]  = (uint8_t)(seq & 0xFF);
-    /* timestamp + ssrc: zeros are fine, the parser doesn't read them. */
-    memset(buf + 4, 0, 8);
+    /* A fixed timestamp so the parser's extraction of it is checked; the
+     * ssrc after it is not read. */
+    buf[4]  = 0x11;
+    buf[5]  = 0x22;
+    buf[6]  = 0x33;
+    buf[7]  = 0x44;
+    memset(buf + 8, 0, 4);
     int off = 12;
     for (int i = 0; i < csrc_count; ++i) {
         memset(buf + off, 0xCC, 4);
@@ -59,6 +64,7 @@ int main(void)
     uint8_t buf[256];
 
     uint16_t       seq;
+    uint32_t       ts;
     const uint8_t *payload;
     int            payload_len;
 
@@ -71,9 +77,10 @@ int main(void)
         int total = off + (int)olen;
 
         RtcmaRtpParse r = rtcma_parse_rtp(buf, total, 111,
-                                          &seq, &payload, &payload_len);
+                                          &seq, &ts, &payload, &payload_len);
         assert(r == RTCMA_RTP_ACCEPT);
         assert(seq == 0x1234);
+        assert(ts == 0x11223344);
         assert(payload_len == (int)olen);
         assert(memcmp(payload, opus, olen) == 0);
     }
@@ -85,25 +92,25 @@ int main(void)
         int off = make_rtp_header(buf, wrong_pt, 99, 0, 0, 0);
         buf[off++] = 0xAA;  /* some payload */
         RtcmaRtpParse r = rtcma_parse_rtp(buf, off, 111,
-                                          &seq, &payload, &payload_len);
+                                          &seq, &ts, &payload, &payload_len);
         assert(r == RTCMA_RTP_SKIP);
     }
     {
         int off = make_rtp_header(buf, 13, 1, 0, 0, 0);
         buf[off++] = 0;
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_SKIP);
     }
     {
         int off = make_rtp_header(buf, 110, 1, 0, 0, 0);
         buf[off++] = 0;
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_SKIP);
     }
     {
         int off = make_rtp_header(buf, 63, 1, 0, 0, 0);
         buf[off++] = 0;
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_SKIP);
     }
 
@@ -112,7 +119,7 @@ int main(void)
     {
         int off = make_rtp_header(buf, 13, 5, 0, 0, 0);
         buf[off++] = 0xAA;
-        assert(rtcma_parse_rtp(buf, off, -1, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, -1, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_ACCEPT);
         assert(seq == 5);
     }
@@ -120,7 +127,7 @@ int main(void)
     /* 4. Short packets - anything < 12 bytes is malformed. */
     for (int sz = 0; sz < 12; ++sz) {
         memset(buf, 0x80, (size_t)sz);
-        assert(rtcma_parse_rtp(buf, sz, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, sz, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
     }
 
@@ -129,10 +136,10 @@ int main(void)
         int off = make_rtp_header(buf, 111, 1, 0, 0, 0);
         buf[off++] = 0xAA;
         buf[0] = (1 << 6);
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
         buf[0] = (3 << 6);
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
     }
 
@@ -143,7 +150,7 @@ int main(void)
         size_t      olen = strlen(opus);
         memcpy(buf + off, opus, olen);
         int total = off + (int)olen;
-        assert(rtcma_parse_rtp(buf, total, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, total, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_ACCEPT);
         assert(seq == 0xBEEF);
         assert(payload_len == (int)olen);
@@ -159,7 +166,7 @@ int main(void)
         size_t      olen = strlen(opus);
         memcpy(buf + off, opus, olen);
         int total = off + (int)olen;
-        assert(rtcma_parse_rtp(buf, total, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, total, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_ACCEPT);
         assert(payload_len == (int)olen);
         assert(memcmp(payload, opus, olen) == 0);
@@ -175,7 +182,7 @@ int main(void)
         size_t      olen = strlen(opus);
         memcpy(buf + off, opus, olen);
         int total = off + (int)olen;
-        assert(rtcma_parse_rtp(buf, total, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, total, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_ACCEPT);
         assert(payload_len == (int)olen);
         assert(memcmp(payload, opus, olen) == 0);
@@ -187,13 +194,13 @@ int main(void)
         int off = make_rtp_header(buf, 111, 1, 0, /*ext*/ 1, 0);
         assert(off == 12);
         /* No extension preamble bytes. */
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
         /* Even 1-3 bytes of preamble is still short. */
         buf[off + 0] = 0xBE;
         buf[off + 1] = 0xDE;
         buf[off + 2] = 0x00;
-        assert(rtcma_parse_rtp(buf, off + 3, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off + 3, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
     }
 
@@ -207,7 +214,7 @@ int main(void)
         /* Only provide 8 bytes of extension data. */
         memset(buf + off + 4, 0, 8);
         int total = off + 4 + 8;
-        assert(rtcma_parse_rtp(buf, total, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, total, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
     }
 
@@ -224,7 +231,7 @@ int main(void)
         buf[off + 1] = 0;
         buf[off + 2] = 3;
         int total = off + 3;
-        assert(rtcma_parse_rtp(buf, total, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, total, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_ACCEPT);
         assert(payload     == buf + payload_off);
         assert(payload_len == (int)olen);
@@ -236,7 +243,7 @@ int main(void)
         /* One byte of "payload" plus padding count of 99 - bogus. */
         buf[off++] = 0xAA;
         buf[off++] = 99;
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
     }
 
@@ -244,14 +251,14 @@ int main(void)
     {
         int off = make_rtp_header(buf, 111, 1, 0, 0, 0);
         /* No payload. */
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_MALFORMED);
     }
 
     /* 14. NULL msg / negative size -> malformed (defensive). */
-    assert(rtcma_parse_rtp(NULL, 100, 111, &seq, &payload, &payload_len)
+    assert(rtcma_parse_rtp(NULL, 100, 111, &seq, &ts, &payload, &payload_len)
            == RTCMA_RTP_MALFORMED);
-    assert(rtcma_parse_rtp(buf, -1, 111, &seq, &payload, &payload_len)
+    assert(rtcma_parse_rtp(buf, -1, 111, &seq, &ts, &payload, &payload_len)
            == RTCMA_RTP_MALFORMED);
 
     /* 15. ACCEPT path leaves out_* untouched on SKIP / MALFORMED. */
@@ -261,7 +268,7 @@ int main(void)
         seq         = 0xFEFE;
         payload     = (const uint8_t *)0xDEADBEEF;
         payload_len = -1;
-        assert(rtcma_parse_rtp(buf, off, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, off, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_SKIP);
         assert(seq         == 0xFEFE);
         assert(payload     == (const uint8_t *)0xDEADBEEF);
@@ -281,7 +288,7 @@ int main(void)
         buf[off + 0] = 0;
         buf[off + 1] = 2;       /* 2 bytes padding total, last is count */
         int total = off + 2;
-        assert(rtcma_parse_rtp(buf, total, 111, &seq, &payload, &payload_len)
+        assert(rtcma_parse_rtp(buf, total, 111, &seq, &ts, &payload, &payload_len)
                == RTCMA_RTP_ACCEPT);
         assert(seq         == 0xCAFE);
         assert(payload     == buf + payload_off);

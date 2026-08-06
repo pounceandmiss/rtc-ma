@@ -2,6 +2,7 @@
 #define RTCMA_INTERNAL_H
 
 #include "rtcma.h"  // IWYU pragma: keep
+#include "speex/speex_jitter.h"
 
 #include <opus/opus.h>
 #include <pthread.h>
@@ -43,11 +44,13 @@ typedef enum {
 
 /* msg/size: raw RTP packet from libdatachannel. expected_pt: the PT we
  * negotiated for this track (caller's t->payload_type). On ACCEPT,
- * *out_seq is the 16-bit seq, *out_payload points into msg at the start
- * of the codec payload, and *out_payload_len is its length with any RTP
- * padding stripped. Outputs are untouched on SKIP / MALFORMED. */
+ * *out_seq is the 16-bit seq, *out_timestamp the 32-bit RTP timestamp
+ * (48 kHz sample units for opus), *out_payload points into msg at the
+ * start of the codec payload, and *out_payload_len is its length with
+ * any RTP padding stripped. Outputs are untouched on SKIP / MALFORMED. */
 RtcmaRtpParse rtcma_parse_rtp(const uint8_t *msg, int size, int expected_pt,
                               uint16_t *out_seq,
+                              uint32_t *out_timestamp,
                               const uint8_t **out_payload,
                               int *out_payload_len);
 
@@ -78,60 +81,96 @@ int     rtcma_internal_id_from_string(const char *s, int backend,
 #define RTCMA_DECODE_MAX_SAMPLES 5760
 
 /* -- Jitter buffer ----------------------------------------------------
- * Tiny reorder ring keyed by RTP sequence number. Stores raw codec
- * payload (post-RTP-strip) so the consumer decodes on drain. Drops late
- * packets older than the play head by more than RTCMA_JITTER_RING/2 slots.
  *
- * Sized at 8 slots = 160 ms of 20 ms Opus frames. Producer (libdatachannel
- * worker thread, inside the message callback) calls rtcma_jitter_put;
- * consumer (audio playback callback) calls rtcma_jitter_get when it
- * needs another frame to decode.
+ * speexdsp's adaptive jitter buffer (src/speexdsp) behind a thin adapter.
+ * It runs in RTP timestamp units, which for opus are 48 kHz samples, and
+ * stores opaque payloads: the only codec-specific step is asking opus how
+ * many samples a payload spans before handing it over.
  *
- * Not codec-specific - the payload is opaque bytes. */
+ * It picks its own play-out depth from the arrival timings it sees,
+ * trading latency against the number of packets a given delay would
+ * strand. Surplus depth is shed internally with no signal to the caller;
+ * too little produces a stretch request.
+ *
+ * Producer is libdatachannel's worker thread inside on_track_message;
+ * consumer is the audio device callback. speexdsp does no locking of its
+ * own and a put can reset the whole buffer, so every entry point here
+ * takes the lock.
+ *
+ * Payloads live in `pool` and are handed over by pointer. The no-op
+ * destroy callback is what selects that zero-copy mode; without one,
+ * speexdsp calloc()s on every put and free()s on every get, and get runs
+ * on the audio thread. Slots are reused round-robin, so a payload stays
+ * valid for RTCMA_JITTER_SLOTS further packets - 1.28 s at 20 ms, long
+ * past the point where the buffer would have dropped it as unplayable. */
 
-#define RTCMA_JITTER_RING        8
 #define RTCMA_JITTER_MAX_PAYLOAD 1500   /* one MTU is enough for Opus 20 ms */
-#define RTCMA_JITTER_MAX_HOLD    5      /* conceal-and-hold frames before skipping a lost live-edge frame (~100 ms) */
+#define RTCMA_JITTER_SLOTS       64     /* payload ring depth */
+
+typedef enum {
+    RTCMA_JITTER_SILENT,    /* nothing playable yet; caller fills silence  */
+    RTCMA_JITTER_FRAME,     /* payload in out_buf; decode it               */
+    RTCMA_JITTER_CONCEAL,   /* gap; conceal *out_span samples              */
+    RTCMA_JITTER_STRETCH,   /* depth too low; conceal *out_span samples    */
+} RtcmaJitterResult;
 
 typedef struct {
-    uint8_t  data[RTCMA_JITTER_MAX_PAYLOAD];
-    int      len;
-    uint16_t seq;
-    bool     present;
-} RtcmaJitterSlot;
-
-typedef struct {
-    RtcmaJitterSlot  slots[RTCMA_JITTER_RING];
-    uint16_t         play_seq;        /* next seq to drain */
-    bool             primed;          /* true once we've seen first packet */
-    bool             playing;         /* true once initial fill reached */
-    int              fill_count;      /* slots currently holding data */
-    int              prime_threshold; /* fill_count >= this before play starts;
-                                        also the steady-state target depth */
-    uint16_t         highest_seq;     /* highest seq seen so far: the live edge */
-    bool             have_highest;
-    int              hold_count;      /* consecutive conceal-and-hold frames */
+    JitterBuffer    *jb;
     pthread_mutex_t  lock;
+    int              frame_samples;  /* chunk we ask for on each get */
 
-    /* Stats (helpful for tests and future logging) */
+    uint8_t          pool[RTCMA_JITTER_SLOTS][RTCMA_JITTER_MAX_PAYLOAD];
+    uint32_t         pool_ts[RTCMA_JITTER_SLOTS];
+    int              pool_len[RTCMA_JITTER_SLOTS];
+    int              next_slot;
+
+    /* Packet the buffer returned with a gap in front of it. The gap plays
+     * first as a conceal; this plays on the pull after that. */
+    const uint8_t   *held;
+    int              held_len;
+
+    uint64_t         gets;              /* pulls so far, for periodic tracing */
+
     uint64_t         stat_put;
-    uint64_t         stat_get_present;
-    uint64_t         stat_get_miss;
-    uint64_t         stat_get_miss_empty;  /* miss while fill_count==0 */
-    uint64_t         stat_late_drop;
-    uint64_t         stat_dup_drop;
+    uint64_t         stat_put_reject;   /* no span from opus, or oversized */
+    uint64_t         stat_frame;
+    uint64_t         stat_conceal;
+    uint64_t         stat_conceal_fec;  /* conceals with a recovery source */
+    uint64_t         stat_conceal_dry;  /* conceals with nothing buffered at
+                                           all, so no successor can exist */
+    uint64_t         stat_stretch;
 } RtcmaJitter;
 
-void rtcma_jitter_init(RtcmaJitter *j);
+/* frame_samples is the nominal frame at the decoder's rate (960 for 20 ms
+ * at 48 kHz). It seeds both the adjustment quantum and the concealment
+ * granularity, so concealment spans come back as whole frames. Returns 0,
+ * or -1 if speexdsp could not allocate. */
+int  rtcma_jitter_init(RtcmaJitter *j, int frame_samples);
 void rtcma_jitter_destroy(RtcmaJitter *j);
-/* Insert a packet. Idempotent on duplicate seq. Returns true if accepted. */
-bool rtcma_jitter_put(RtcmaJitter *j, uint16_t seq,
-                      const uint8_t *payload, int len);
-/* Drain one slot. Returns true if a packet is present; out_len/out_buf
- * filled. Returns false if slot is empty (caller should do PLC) - in
- * that case out_len is 0. Always advances the play head once primed. */
-bool rtcma_jitter_get(RtcmaJitter *j, uint8_t *out_buf, int out_buf_cap,
-                      int *out_len);
+
+/* span is the packet's duration in the same units as timestamp. Returns
+ * false if the payload is too large to store. Packets that are too late
+ * to play are accepted here and dropped inside speexdsp, which still
+ * counts their lateness towards the delay estimate. */
+bool rtcma_jitter_put(RtcmaJitter *j, uint32_t timestamp, uint16_t seq,
+                      const uint8_t *payload, int len, int span);
+
+/* Produce one playback chunk. On FRAME, out_buf/out_len hold the payload
+ * and *out_skip is how many leading samples of the decoded frame have
+ * already been played and must be dropped. On CONCEAL and STRETCH,
+ * *out_span is how many samples to conceal.
+ *
+ * On CONCEAL only, a non-zero *out_len means out_buf holds the packet that
+ * comes immediately after the gap. That is not audio to play: opus carries
+ * a copy of the previous frame inside the next packet, so the caller can
+ * recover the gap from it instead of extrapolating. The packet stays
+ * queued and a later call returns it as a FRAME.
+ *
+ * Advances the buffer's clock, so call it exactly once per playback
+ * period. */
+RtcmaJitterResult rtcma_jitter_get(RtcmaJitter *j, uint8_t *out_buf,
+                                   int out_buf_cap, int *out_len,
+                                   int *out_span, int *out_skip);
 
 /* -- SDP probe (rtcma_sdp.c) ------------------------------------------
  * Pure SDP parser. Pulls the opus fmtp parameters tacky needs to honour
@@ -239,12 +278,12 @@ int  rtcma_recv_track_attach(RtcmaRecvTrack *t, int rtc_track_id,
                              int channels_override, int pt_override);
 void rtcma_recv_track_detach(RtcmaRecvTrack *t);
 
-/* Pull one Opus frame. Returns 0 (caller fills silence) until
- * prime_threshold reached; returns the per-channel sample count actually
- * decoded (typically 960 for 20 ms, but can be up to
- * RTCMA_DECODE_MAX_SAMPLES when peer sends 40/60/120 ms) on success or
- * PLC once playing; returns -1 on decode error. pcm capacity must be at
- * least RTCMA_DECODE_MAX_SAMPLES * channels int16. */
+/* Pull one chunk of PCM. Returns 0 (caller fills silence) while the
+ * jitter buffer has nothing to play yet; otherwise the per-channel sample
+ * count decoded, whether from a real packet or concealment (typically 960
+ * for 20 ms, up to RTCMA_DECODE_MAX_SAMPLES when the peer sends
+ * 40/60/120 ms); -1 on decode error. pcm capacity must be at least
+ * RTCMA_DECODE_MAX_SAMPLES * channels int16. */
 int  rtcma_recv_track_pull_pcm(RtcmaRecvTrack *t, int16_t *pcm,
                                size_t pcm_capacity_samples);
 
