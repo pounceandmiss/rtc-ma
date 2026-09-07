@@ -10,7 +10,10 @@
  * setting before the new one takes effect. C11 atomics give us that
  * guarantee without a mutex. */
 static _Atomic rtcmaLogLevel        g_level = RTCMA_LOG_NONE;
-static _Atomic(rtcmaLogCallbackFunc) g_cb   = NULL;
+/* No initializer: Apple clang through 14 rejects `= NULL` on an _Atomic pointer
+ * as "initializer element is not a compile-time constant". Static storage is
+ * zero-initialized anyway, so g_cb still starts null. */
+static _Atomic(rtcmaLogCallbackFunc) g_cb;
 
 void rtcmaInitLogger(rtcmaLogLevel level, rtcmaLogCallbackFunc cb)
 {
