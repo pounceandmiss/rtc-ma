@@ -473,9 +473,12 @@ RtcmaPlayer *rtcma_player_new(const RtcmaPlayerConfig *cfg)
 void rtcma_player_destroy(RtcmaPlayer *p)
 {
     if (!p) return;
+    /* Stop the device before detaching: ma_device_stop blocks until
+     * on_playback is guaranteed done, so recv-track teardown below
+     * never races a callback still holding bind_lock. */
+    if (p->device && p->started) ma_device_stop(p->device);
     rtcma_player_detach(p);
     if (p->device) {
-        if (p->started) ma_device_stop(p->device);
         ma_device_uninit(p->device);
         free(p->device);
     }
@@ -638,9 +641,12 @@ RtcmaCapturer *rtcma_capturer_new(const RtcmaCapturerConfig *cfg)
 void rtcma_capturer_destroy(RtcmaCapturer *c)
 {
     if (!c) return;
+    /* Stop the device before detaching: ma_device_stop blocks until
+     * on_capture is guaranteed done, so send-track teardown below
+     * never races a callback still holding bind_lock. */
+    if (c->device && c->started) ma_device_stop(c->device);
     rtcma_capturer_detach(c);
     if (c->device) {
-        if (c->started) ma_device_stop(c->device);
         ma_device_uninit(c->device);
         free(c->device);
     }

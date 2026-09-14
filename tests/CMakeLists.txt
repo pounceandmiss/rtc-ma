@@ -44,6 +44,7 @@ _rtcma_add_test(test_attach_detach TIMEOUT 30)
 _rtcma_add_test(test_audible_loopback     AUDIBLE TIMEOUT 30)
 _rtcma_add_test(test_audible_mic_loopback AUDIBLE TIMEOUT 30)
 _rtcma_add_test(test_device_reopen        AUDIBLE TIMEOUT 15)
+_rtcma_add_test(test_destroy_device_race  AUDIBLE TIMEOUT 30)
 
 # Tcl-side device-id round-trip - only when the bindings are built.
 # tclsh runs the .tcl script directly and loads the freshly-built
