@@ -15,6 +15,7 @@
 #include "rtcma_internal.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -166,6 +167,16 @@ int main(void)
      * PT while the fmtp line is for another. */
     CHECK_PARAM(useinbandfec,
                 "a=fmtp:111 useinbandfec=1\r\n", 96, 0);
+
+    /* Peer-controlled digit runs must saturate, not overflow. Anything
+     * that big is "no cap" to every consumer of these fields. */
+    const char *huge =
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=fmtp:111 maxaveragebitrate=99999999999999999999999;"
+        "maxplaybackrate=2147483648;minptime=2147483647\r\n";
+    CHECK_PARAM(maxaveragebitrate, huge, 111, INT_MAX);
+    CHECK_PARAM(maxplaybackrate,   huge, 111, INT_MAX);
+    CHECK_PARAM(minptime,          huge, 111, INT_MAX);
 
     printf("test_sdp_parse: all cases passed\n");
     return 0;

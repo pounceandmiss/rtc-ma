@@ -1,8 +1,41 @@
 #include "rtcma_internal.h"
 #include "rtp_hdr.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#if defined(__linux__)
+#include <sys/random.h>
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+      defined(__NetBSD__)
+#include <stdlib.h>   /* arc4random_buf */
+#endif
+
+/* Fill `buf` from the OS entropy source. Returns 0, or -1 if the platform
+ * has no usable source, in which case the caller falls back to a clock
+ * mix. RFC 3550 sec.5.1 wants SSRC, initial sequence number, and initial
+ * timestamp to be unpredictable; a predictable initial sequence number
+ * in particular makes the SRTP packet index guessable from outside. */
+static int os_random(void *buf, size_t len)
+{
+#if defined(__linux__)
+    size_t got = 0;
+    while (got < len) {
+        ssize_t n = getrandom((char *)buf + got, len - got, 0);
+        if (n < 0) return -1;
+        got += (size_t)n;
+    }
+    return 0;
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+      defined(__NetBSD__)
+    arc4random_buf(buf, len);
+    return 0;
+#else
+    (void)buf; (void)len;
+    return -1;
+#endif
+}
 
 /* Strip the RFC 3550 header (vendored rtp_hdr.h, shared with rtc-mv)
  * and report back whether this packet should be queued for the bound
@@ -87,15 +120,29 @@ static int resolve_pt_and_params(int rtc_track_id,
         *pt_inout = pts[0];
     }
 
-    char sdp[4096];
-    int got = rtcGetTrackDescription(rtc_track_id, sdp, sizeof(sdp));
+    /* The m-section echoes every rtpmap / fmtp / extmap line the peer
+     * offered, so its length is the peer's choice. Ask libdatachannel for
+     * the size first (NULL buffer = "how big?") instead of guessing with a
+     * fixed stack buffer that a fat offer would make every attach fail on. */
+    int need = rtcGetTrackDescription(rtc_track_id, NULL, 0);
+    if (need <= 0) {
+        rtcma_log(RTCMA_LOG_ERROR,
+                  "rtcGetTrackDescription returned %d on track %d",
+                  need, rtc_track_id);
+        return -1;
+    }
+    char *sdp = malloc((size_t)need);
+    if (!sdp) return -1;
+    int got = rtcGetTrackDescription(rtc_track_id, sdp, need);
     if (got <= 0) {
         rtcma_log(RTCMA_LOG_ERROR,
                   "rtcGetTrackDescription returned %d on track %d",
                   got, rtc_track_id);
+        free(sdp);
         return -1;
     }
     rtcma_opus_params_from_sdp(sdp, *pt_inout, params);
+    free(sdp);
 
     if (channels_override != 0) params->channels = channels_override;
 
@@ -335,11 +382,12 @@ int rtcma_send_track_attach(RtcmaSendTrack *t, int rtc_track_id,
         opus_encoder_ctl(enc, OPUS_SET_VBR(0));
     }
 
-    /* Generate SSRC, initial sequence number, and initial RTP timestamp
-     * from CLOCK_MONOTONIC + this track's address. RFC 3550 sec.5.1 calls
-     * for both initial values to be random for SRTP security; nothing
-     * outside this process consumes them so monotonic-clock entropy is
-     * plenty.
+    /* Generate SSRC, initial sequence number, and initial RTP timestamp.
+     * RFC 3550 sec.5.1 wants all three unpredictable: the SSRC so two
+     * senders under one SRTP key cannot collide (a collision is keystream
+     * reuse), the sequence number and timestamp so the packet index is
+     * not guessable. Use the OS entropy source; fall back to a
+     * CLOCK_MONOTONIC + address mix only where none is available.
      *
      * We do NOT install rtcSetOpusPacketizer or rtcChainRtcpSrReporter.
      * The track keeps an empty media handler chain, so rtcSendMessage
@@ -347,16 +395,21 @@ int rtcma_send_track_attach(RtcmaSendTrack *t, int rtc_track_id,
      * SRTP-encrypts the bytes we hand it and ships them. The 12-byte
      * RFC 3550 header is built ourselves in rtcma_send_track_push_pcm
      * (see RtcmaSendTrack doc in rtcma_internal.h for the rationale). */
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-
-    uint32_t ssrc = (uint32_t)(ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 16) ^
-                               (uintptr_t)t);
+    uint32_t rnd[3];
+    if (os_random(rnd, sizeof(rnd)) != 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        rnd[0] = (uint32_t)(ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 16) ^
+                            (uintptr_t)t);
+        rnd[1] = (uint32_t)(ts.tv_nsec ^ ((uintptr_t)t >> 4));
+        rnd[2] = (uint32_t)(ts.tv_nsec * 2654435761u) ^ rnd[0];
+    }
+    uint32_t ssrc = rnd[0];
     if (ssrc == 0) ssrc = 0xC0FFEE;
 
     t->ssrc           = ssrc;
-    t->next_seq       = (uint16_t)(ts.tv_nsec ^ ((uintptr_t)t >> 4));
-    t->next_timestamp = (uint32_t)(ts.tv_nsec * 2654435761u) ^ ssrc;
+    t->next_seq       = (uint16_t)rnd[1];
+    t->next_timestamp = rnd[2];
 
     /* Log the libdatachannel-side direction. If this comes back as
      * RECVONLY/INACTIVE, Track::outgoing silently drops every message

@@ -1,5 +1,6 @@
 #include "rtcma_internal.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +15,12 @@
  * by ';', ' ', or buffer start. Required to keep `stereo=` from
  * matching inside `sprop-stereo=` and the substring guarantees match
  * what test_sdp_parse expects. Returns true and writes the trailing
- * non-negative integer to *out on the first hit. */
+ * non-negative integer to *out on the first hit.
+ *
+ * The line comes from the remote peer's SDP, so the digit run can be
+ * arbitrarily long. Saturate at INT_MAX rather than let the
+ * accumulation overflow (signed overflow is undefined behaviour); every
+ * caller treats a huge value the same as "no cap" anyway. */
 static bool fmtp_get_int(const char *buf, size_t len, const char *key,
                          int *out)
 {
@@ -32,7 +38,9 @@ static bool fmtp_get_int(const char *buf, size_t len, const char *key,
         int  v   = 0;
         bool any = false;
         while (p < end && *p >= '0' && *p <= '9') {
-            v   = v * 10 + (*p - '0');
+            int d = *p - '0';
+            if (v > (INT_MAX - d) / 10) v = INT_MAX;
+            else                        v = v * 10 + d;
             p++;
             any = true;
         }

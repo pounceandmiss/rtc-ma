@@ -369,6 +369,51 @@ static void test_oversized_payload_rejected(void)
     printf("  oversized_payload_rejected: ok\n");
 }
 
+/* The RTP timestamp is the peer's to choose. speexdsp subtracts
+ * timestamps after casting them to signed 32-bit, so a stream that sits
+ * near 0x80000000, or jumps across it, is signed overflow unless the
+ * vendored file is built with -fwrapv (see CMakeLists.txt). This drives
+ * that arithmetic through every branch of put and get; under a UBSan
+ * build it aborts if the flag ever goes missing, and in any build it
+ * checks that the adapter still yields a bounded, usable result. */
+static void test_hostile_timestamps(void)
+{
+    static const uint32_t starts[] = {
+        0x80000000u - 2 * FRAME, 0x7FFFFFF0u, 0xFFFFFFFFu - FRAME, 0u,
+    };
+    for (size_t k = 0; k < sizeof(starts) / sizeof(starts[0]); ++k) {
+        RtcmaJitter j;
+        assert(rtcma_jitter_init(&j, FRAME) == 0);
+
+        uint32_t ts = starts[k];
+        for (int i = 0; i < 400; ++i) {
+            /* Mostly a sane stream, with random far jumps in either
+             * direction, dupes, and packets from the other side of the
+             * signed boundary. */
+            uint32_t pts = ts;
+            switch (i % 23) {
+            case 5:  pts = ts ^ 0x80000000u;       break;
+            case 11: pts = ts + 0x7FFFFFFFu;       break;
+            case 17: pts = ts - 0x7FFFFFFFu;       break;
+            case 19: pts = ts - FRAME;             break;  /* dupe */
+            default: break;
+            }
+            assert(put_at(&j, pts));
+            ts += FRAME;
+
+            uint8_t buf[64]; int len = 0;
+            RtcmaJitterResult r = pull(&j, buf, sizeof(buf), &len);
+            assert(len >= 0 && len <= (int)sizeof(buf));
+            if (r == RTCMA_JITTER_CONCEAL || r == RTCMA_JITTER_STRETCH)
+                assert(last_span > 0);
+            if (r == RTCMA_JITTER_FRAME)
+                assert(last_skip >= 0);
+        }
+        rtcma_jitter_destroy(&j);
+    }
+    printf("  hostile_timestamps: ok\n");
+}
+
 int main(void)
 {
     printf("test_jitter:\n");
@@ -383,6 +428,7 @@ int main(void)
     test_stall_does_not_ratchet();
     test_fast_sender_sheds();
     test_oversized_payload_rejected();
+    test_hostile_timestamps();
     printf("test_jitter: all ok\n");
     return 0;
 }

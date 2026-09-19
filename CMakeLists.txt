@@ -120,9 +120,17 @@ target_include_directories(rtcma
 # See src/speexdsp/README.md. HAVE_CONFIG_H stays undefined so no
 # configure-generated header is needed, and DISABLE_WARNINGS keeps
 # speexdsp's fprintf(stderr) calls off the audio device thread.
+#
+# -fwrapv: speexdsp does its timestamp arithmetic on values cast to
+# signed 32-bit and relies on two's-complement wraparound, e.g.
+# `(spx_int32_t)packet->timestamp - (spx_int32_t)jitter->next_stop` in
+# jitter_buffer_put. The RTP timestamp is peer-chosen, so a packet
+# stamped near 0x80000000 overflows a signed int, which is undefined
+# behaviour and an abort under UBSan. Defining the wrap semantics for
+# this one file makes the vendored code well-defined without patching it.
 set_source_files_properties(src/speexdsp/jitter.c PROPERTIES
   COMPILE_DEFINITIONS "FLOATING_POINT;EXPORT=;DISABLE_WARNINGS"
-  COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-parameter")
+  COMPILE_OPTIONS "-fwrapv;-Wno-sign-compare;-Wno-unused-parameter")
 
 target_link_libraries(rtcma
   PUBLIC  Rtcma::libdatachannel Rtcma::opus Threads::Threads

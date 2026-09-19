@@ -425,6 +425,7 @@ static const char *const kRtcmaLogLevelNames[] = {
 static Tcl_ThreadId g_log_thread = NULL;
 static Tcl_Interp  *g_log_interp = NULL;
 static Tcl_Obj     *g_log_script = NULL;   /* command prefix; NULL if unset */
+static int          g_log_level  = 0;      /* mirrors the level handed to rtcmaInitLogger */
 
 typedef struct { Tcl_Event ev; char *level; char *message; } RtcmaLogEvent;
 
@@ -502,6 +503,32 @@ static void RtcmaLogCb(rtcmaLogLevel level, const char *message) {
     Tcl_ThreadAlert(t);
 }
 
+/* The registered interp is held as a raw pointer and used from the event
+ * loop long after ::rtcma::set-log-level returned. If that interp goes
+ * away first (a child interp deleted by script, or the main one on exit)
+ * any log event still queued would Tcl_EvalObjv into freed memory. So the
+ * registration is dropped the moment Tcl tells us the interp is dying;
+ * rtc-ma falls back to its stderr sink at the same level. Runs on the
+ * interp's own thread, which is also the only thread that dispatches the
+ * queued events, so nothing is mid-eval while this clears the state. */
+static void RtcmaLogInterpDeleted(void *cd, Tcl_Interp *interp) {
+    (void)cd;
+    Tcl_Obj *prev = NULL;
+    Tcl_MutexLock(&g_mutex);
+    if (g_log_interp == interp) {
+        prev         = g_log_script;
+        g_log_script = NULL;
+        g_log_interp = NULL;
+        g_log_thread = NULL;
+        rtcmaInitLogger((rtcmaLogLevel)g_log_level, NULL);
+    }
+    Tcl_MutexUnlock(&g_mutex);
+    if (prev) {
+        Tcl_DeleteEvents(RtcmaLogEventMatch, NULL);
+        Tcl_DecrRefCount(prev);
+    }
+}
+
 static int Cmd_set_log_level(void *cd, Tcl_Interp *interp, int objc,
                              Tcl_Obj *const objv[]) {
     (void)cd;
@@ -520,9 +547,12 @@ static int Cmd_set_log_level(void *cd, Tcl_Interp *interp, int objc,
         if (slen > 0) newScript = objv[2];
     }
 
-    Tcl_Obj *prev;
+    Tcl_Obj    *prev;
+    Tcl_Interp *prevInterp;
     Tcl_MutexLock(&g_mutex);
-    prev = g_log_script;
+    prev       = g_log_script;
+    prevInterp = g_log_interp;
+    g_log_level = idx;
     if (newScript) {
         Tcl_IncrRefCount(newScript);
         g_log_script = newScript;
@@ -536,6 +566,17 @@ static int Cmd_set_log_level(void *cd, Tcl_Interp *interp, int objc,
     /* No callback uses rtc-ma's default stderr sink. */
     rtcmaInitLogger((rtcmaLogLevel)idx, newScript ? RtcmaLogCb : NULL);
     Tcl_MutexUnlock(&g_mutex);
+
+    /* Track exactly one interp's lifetime: the one currently registered. */
+    if (prevInterp && prevInterp != interp)
+        Tcl_DontCallWhenDeleted(prevInterp, RtcmaLogInterpDeleted, NULL);
+    if (newScript) {
+        if (prevInterp != interp)
+            Tcl_CallWhenDeleted(interp, RtcmaLogInterpDeleted, NULL);
+    } else if (prevInterp == interp) {
+        Tcl_DontCallWhenDeleted(interp, RtcmaLogInterpDeleted, NULL);
+    }
+
     if (prev) Tcl_DecrRefCount(prev);
     if (!newScript) Tcl_DeleteEvents(RtcmaLogEventMatch, NULL);
 

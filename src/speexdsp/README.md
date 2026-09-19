@@ -23,6 +23,12 @@ Built with `FLOATING_POINT`, `EXPORT=` and `DISABLE_WARNINGS`, and without
 matters: four `fprintf(stderr)` calls are reachable from the playback path,
 and that path runs on the audio device thread.
 
+Also built with `-fwrapv`. The buffer subtracts timestamps after casting
+them to `spx_int32_t` and expects the result to wrap; the RTP timestamp is
+chosen by the peer, so without `-fwrapv` a packet stamped near
+`0x80000000` is signed overflow (undefined behaviour, and a UBSan abort).
+Keep the flag when updating.
+
 `rtcma_jitter.c` is the adapter. It drives the buffer in RTP timestamp units
 and hands it a no-op destroy callback, which puts it in zero-copy mode and
 keeps `jitter_buffer_put` and `jitter_buffer_get` free of any allocation.
