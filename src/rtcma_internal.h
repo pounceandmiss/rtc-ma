@@ -28,8 +28,10 @@ void rtcma_log(rtcmaLogLevel level, const char *fmt, ...)
 
 /* -- RTP demux (rtcma_track.c) ----------------------------------------
  *
- * Pure RFC 3550 / 8285 RTP header parser. Extracted from on_track_message
- * so it can be unit-tested without libdatachannel handles. libdatachannel
+ * A payload-type filter over the vendored RFC 3550 / 8285 header parser
+ * in rtp_hdr.h (shared verbatim with rtc-mv). Extracted from
+ * on_track_message so it can be unit-tested without libdatachannel
+ * handles. libdatachannel
  * delivers every RTP packet on a given SSRC to the track callback - it
  * does NOT filter by payload type - so the m-line's other PTs (CN=13,
  * telephone-event=110, RED=63, ...) reach us alongside opus(111). Without

@@ -1,12 +1,12 @@
 #include "rtcma_internal.h"
+#include "rtp_hdr.h"
 
 #include <string.h>
 #include <time.h>
 
-/* Parse an RFC 3550 RTP header (with RFC 8285 sec.4 extension support for
- * both one-byte 0xBEDE and two-byte 0x1000 profiles - the length-in-
- * 32-bit-words field is in the same place either way) and report back
- * whether this packet should be queued for the bound decoder.
+/* Strip the RFC 3550 header (vendored rtp_hdr.h, shared with rtc-mv)
+ * and report back whether this packet should be queued for the bound
+ * decoder.
  *
  * libdatachannel delivers every packet on the SSRC regardless of PT,
  * so the m-line's CN(13)/DTMF(110)/RED(63)/PCMU/PCMA traffic surfaces
@@ -19,43 +19,16 @@ RtcmaRtpParse rtcma_parse_rtp(const uint8_t *msg, int size, int expected_pt,
                               const uint8_t **out_payload,
                               int *out_payload_len)
 {
-    if (!msg || size < 12) return RTCMA_RTP_MALFORMED;
-    const uint8_t *p = msg;
+    if (size < 0) return RTCMA_RTP_MALFORMED;
 
-    int version = (p[0] >> 6) & 0x3;
-    if (version != 2) return RTCMA_RTP_MALFORMED;
+    RtpHdr h;
+    if (rtp_hdr_parse(msg, (size_t)size, &h) != 0) return RTCMA_RTP_MALFORMED;
+    if (expected_pt >= 0 && h.pt != expected_pt) return RTCMA_RTP_SKIP;
 
-    int csrc_count = p[0] & 0x0F;
-    int has_ext    = (p[0] >> 4) & 0x1;
-    int header_len = 12 + csrc_count * 4;
-    if (size < header_len) return RTCMA_RTP_MALFORMED;
-
-    if (has_ext) {
-        if (size < header_len + 4) return RTCMA_RTP_MALFORMED;
-        int ext_len_words = ((int)p[header_len + 2] << 8) | p[header_len + 3];
-        header_len += 4 + ext_len_words * 4;
-        if (size < header_len) return RTCMA_RTP_MALFORMED;
-    }
-
-    int padding = 0;
-    if ((p[0] >> 5) & 0x1) {
-        padding = p[size - 1];
-        if (padding > size - header_len) return RTCMA_RTP_MALFORMED;
-    }
-
-    int payload_len = size - header_len - padding;
-    if (payload_len <= 0) return RTCMA_RTP_MALFORMED;
-
-    int pt = p[1] & 0x7F;
-    if (expected_pt >= 0 && pt != expected_pt) return RTCMA_RTP_SKIP;
-
-    if (out_seq)         *out_seq         = ((uint16_t)p[2] << 8) | p[3];
-    if (out_timestamp)   *out_timestamp   = ((uint32_t)p[4] << 24)
-                                          | ((uint32_t)p[5] << 16)
-                                          | ((uint32_t)p[6] <<  8)
-                                          |  (uint32_t)p[7];
-    if (out_payload)     *out_payload     = p + header_len;
-    if (out_payload_len) *out_payload_len = payload_len;
+    if (out_seq)         *out_seq         = h.seq;
+    if (out_timestamp)   *out_timestamp   = h.timestamp;
+    if (out_payload)     *out_payload     = msg + h.payload_off;
+    if (out_payload_len) *out_payload_len = (int)h.payload_len;
     return RTCMA_RTP_ACCEPT;
 }
 

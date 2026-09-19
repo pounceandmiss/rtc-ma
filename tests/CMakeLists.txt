@@ -32,7 +32,16 @@ endfunction()
 
 _rtcma_add_test(test_jitter      TIMEOUT 10)
 _rtcma_add_test(test_sdp_parse   TIMEOUT 10)
+_rtcma_add_test(test_rtp_hdr     TIMEOUT 20)
 _rtcma_add_test(test_rtp_demux   TIMEOUT 10)
+
+# test_rtp_fuzz.c is the libFuzzer target for the RTP parse path. Without
+# clang it still builds as a plain ctest that drives the same
+# LLVMFuzzerTestOneInput deterministically, so a gcc run keeps the
+# coverage. RTCMA_FUZZ=ON additionally builds the real fuzzer; seed its
+# corpus with `./test_rtp_fuzz --emit-corpus <dir>`.
+_rtcma_add_test(test_rtp_fuzz    TIMEOUT 60)
+
 _rtcma_add_test(test_recv_decode TIMEOUT 10)
 _rtcma_add_test(test_device_id_serialize TIMEOUT 10)
 _rtcma_add_test(test_enumerate_dump      AUDIBLE TIMEOUT 10)
@@ -45,6 +54,23 @@ _rtcma_add_test(test_audible_loopback     AUDIBLE TIMEOUT 30)
 _rtcma_add_test(test_audible_mic_loopback AUDIBLE TIMEOUT 30)
 _rtcma_add_test(test_device_reopen        AUDIBLE TIMEOUT 15)
 _rtcma_add_test(test_destroy_device_race  AUDIBLE TIMEOUT 30)
+
+if(RTCMA_FUZZ)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR
+      "RTCMA_FUZZ needs clang for -fsanitize=fuzzer (have "
+      "${CMAKE_C_COMPILER_ID}). Configure with CC=clang.")
+  endif()
+  add_executable(fuzz_rtp test_rtp_fuzz.c)
+  target_link_libraries(fuzz_rtp PRIVATE rtcma m)
+  target_include_directories(fuzz_rtp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_compile_definitions(fuzz_rtp PRIVATE RTCMA_LIBFUZZER)
+  target_compile_options(fuzz_rtp PRIVATE
+    -UNDEBUG -g -fno-omit-frame-pointer
+    -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all)
+  target_link_options(fuzz_rtp PRIVATE -fsanitize=fuzzer,address,undefined)
+  set_target_properties(fuzz_rtp PROPERTIES LINKER_LANGUAGE CXX)
+endif()
 
 # Tcl-side device-id round-trip - only when the bindings are built.
 # tclsh runs the .tcl script directly and loads the freshly-built

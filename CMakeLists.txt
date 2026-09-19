@@ -33,6 +33,11 @@ option(RTCMA_BUILD_TCL
 embedders linking the package into a custom tclsh."
   OFF)
 
+option(RTCMA_ASAN
+  "Build with AddressSanitizer + UBSan (for the fuzz / stress tests)." OFF)
+option(RTCMA_FUZZ
+  "Build the libFuzzer target for the RTP parse path (clang only)." OFF)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -44,6 +49,12 @@ endif()
 
 add_compile_options(-Wall -Wextra)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+if(RTCMA_ASAN)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer
+                      -fno-sanitize-recover=all -g)
+  add_link_options(-fsanitize=address,undefined)
+endif()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
