@@ -381,6 +381,15 @@ int rtcma_send_track_attach(RtcmaSendTrack *t, int rtc_track_id,
                                (uintptr_t)t);
     if (ssrc == 0) ssrc = 0xC0FFEE;
 
+    /* Unless the m-line announced one: a peer that demuxes incoming RTP by
+     * SSRC -- libdatachannel does, once a connection carries more than one
+     * track -- has only the SDP to go by, and a random SSRC it was never
+     * told about is dropped on arrival. tacky's rtc backend writes the
+     * SSRC into every m-line it adds for exactly this. */
+    uint32_t announced[4];
+    int n_announced = rtcGetSsrcsForTrack(rtc_track_id, announced, 4);
+    if (n_announced > 0 && announced[0] != 0) ssrc = announced[0];
+
     t->ssrc           = ssrc;
     t->next_seq       = (uint16_t)(ts.tv_nsec ^ ((uintptr_t)t >> 4));
     t->next_timestamp = (uint32_t)(ts.tv_nsec * 2654435761u) ^ ssrc;
